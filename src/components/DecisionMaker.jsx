@@ -15,14 +15,40 @@ import {
 
 // Default export so this file can be used as App or imported into App.js
 export default function DecisionMakerApp() {
+    // Helper to safely parse localStorage value for an array or object
+    function readPresetsFromStorage() {
+        try {
+            const raw = localStorage.getItem("presets_v1");
+            if (!raw) return [];
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed)) return parsed;
+            if (parsed && typeof parsed === "object") return [parsed];
+        } catch (err) {
+            console.warn("readPresetsFromStorage error:", err);
+        }
+        return [];
+    }
+
+    function readDecisionsFromStorage() {
+        try {
+            const raw = localStorage.getItem("decisions_v1");
+            if (!raw) return [];
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed)) return parsed;
+        } catch (err) {
+            console.warn("readDecisionsFromStorage error:", err);
+        }
+        return [];
+    }
+
     const [input, setInput] = useState("");
-    const [decisions, setDecisions] = useState([]);
+    const [decisions, setDecisions] = useState(() => readDecisionsFromStorage());
     const [activeIndex, setActiveIndex] = useState(-1);
     const [isRunning, setIsRunning] = useState(false);
     const [spinDuration, setSpinDuration] = useState(3); // seconds (user-configurable)
 
     // Presets (saved decision sets)
-    const [presets, setPresets] = useState([]);
+    const [presets, setPresets] = useState(() => readPresetsFromStorage());
     const [showPresetModal, setShowPresetModal] = useState(false);
     const [presetName, setPresetName] = useState("");
     const [editingPresetId, setEditingPresetId] = useState(null);
