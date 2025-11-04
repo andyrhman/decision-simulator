@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import "bootstrap/dist/css/bootstrap.min.css";
+import "bootstrap-icons/font/bootstrap-icons.css";
 import {
     Container,
     Row,
@@ -12,6 +13,8 @@ import {
     Badge,
     Modal,
 } from "react-bootstrap";
+
+const GITHUB_URL = "https://github.com/andyrhman";
 
 // Default export so this file can be used as App or imported into App.js
 export default function DecisionMakerApp() {
@@ -279,142 +282,146 @@ export default function DecisionMakerApp() {
     }
 
     return (
-        <Container fluid className="min-vh-100 d-flex justify-content-center align-items-center bg-light">
-            <Row className="w-100 justify-content-center">
-                <Col xs={6} sm={7} md={10} lg={11} xl={12}>
-                    <Card className="shadow-sm">
-                        <Card.Body>
-                            <h3 className="text-center mb-3">Decision Maker</h3>
+        <Container fluid className="d-flex flex-column bg-light">
+            {/* Main area - flexes to fill available space; card centered inside */}
+            <main className="flex-grow-1 d-flex align-items-center justify-content-center w-100">
+                <Row className="w-100 justify-content-center">
+                    <Col xs={6} sm={7} md={10} lg={11} xl={12}>
+                        {/* Constrain card height so footer doesn't force scroll on large monitors */}
+                        <Card className="shadow-sm" style={{ maxHeight: '80vh', overflow: 'auto' }}>
+                            <Card.Body>
+                                <h3 className="text-center mb-3">Decision Simulator 🎲</h3>
 
-                            {/* Input row */}
-                            <Form onSubmit={addDecision}>
-                                <InputGroup>
-                                    <Form.Control
-                                        placeholder="Type a decision (e.g. 'Study for 1 hour', 'Play games')"
-                                        value={input}
-                                        onChange={(e) => setInput(e.target.value)}
-                                        disabled={isRunning}
-                                        aria-label="decision-input"
-                                    />
-                                    <Button
-                                        type="submit"
-                                        variant="primary"
-                                        onClick={addDecision}
-                                        disabled={isRunning || input.trim() === ""}
-                                    >
-                                        Add Decision
-                                    </Button>
-                                </InputGroup>
-                            </Form>
-
-                            {/* Controls */}
-                            <div className="d-flex flex-column flex-sm-row justify-content-between align-items-start align-items-sm-center gap-2 mt-3">
-                                <div className="d-flex gap-2">
-                                    <Button
-                                        variant={isRunning ? "secondary" : "success"}
-                                        onClick={startDecision}
-                                        disabled={isRunning || decisions.length === 0}
-                                    >
-                                        {isRunning ? "Picking..." : "Start Decision"}
-                                    </Button>
-
-                                    {isRunning ? (
-                                        <Button variant="warning" onClick={stopSpin}>
-                                            Stop
+                                {/* Input row */}
+                                <Form onSubmit={addDecision}>
+                                    <InputGroup>
+                                        <Form.Control
+                                            placeholder="Type a decision (e.g. 'Study for 1 hour', 'Play games')"
+                                            value={input}
+                                            onChange={(e) => setInput(e.target.value)}
+                                            disabled={isRunning}
+                                            aria-label="decision-input"
+                                        />
+                                        <Button
+                                            type="submit"
+                                            variant="primary"
+                                            onClick={addDecision}
+                                            disabled={isRunning || input.trim() === ""}
+                                        >
+                                            Add Decision
                                         </Button>
-                                    ) : (
-                                        <Button variant="outline-primary" onClick={restartFromStart} disabled={decisions.length === 0}>
-                                            Restart From Start
+                                    </InputGroup>
+                                </Form>
+
+                                {/* Controls */}
+                                <div className="d-flex flex-column flex-sm-row justify-content-between align-items-start align-items-sm-center gap-2 mt-3">
+                                    <div className="d-flex gap-2">
+                                        <Button
+                                            variant={isRunning ? "secondary" : "success"}
+                                            onClick={startDecision}
+                                            disabled={isRunning || decisions.length === 0}
+                                        >
+                                            {isRunning ? "Picking..." : "Start Decision"}
                                         </Button>
-                                    )}
 
-                                    <Button
-                                        variant="outline-danger"
-                                        onClick={clearAll}
-                                        disabled={decisions.length === 0 || isRunning}
-                                        className="ms-2"
-                                    >
-                                        Clear All
-                                    </Button>
+                                        {isRunning ? (
+                                            <Button variant="warning" onClick={stopSpin}>
+                                                Stop
+                                            </Button>
+                                        ) : (
+                                            <Button variant="outline-primary" onClick={restartFromStart} disabled={decisions.length === 0}>
+                                                Restart From Start
+                                            </Button>
+                                        )}
 
-                                    <Button variant="outline-secondary" onClick={() => openSavePresetModal()} disabled={decisions.length === 0}>
-                                        Save Preset
-                                    </Button>
+                                        <Button
+                                            variant="outline-danger"
+                                            onClick={clearAll}
+                                            disabled={decisions.length === 0 || isRunning}
+                                            className="ms-2"
+                                        >
+                                            Clear All
+                                        </Button>
 
-                                    <Button variant="outline-info" onClick={() => setShowPresetModal(true)}>
-                                        Presets ({presets.length})
-                                    </Button>
+                                        <Button variant="outline-secondary" onClick={() => openSavePresetModal()} disabled={decisions.length === 0}>
+                                            Save Preset
+                                        </Button>
+
+                                        <Button variant="outline-info" onClick={() => setShowPresetModal(true)}>
+                                            Presets ({presets.length})
+                                        </Button>
+                                    </div>
+
+                                    {/* Spin duration control */}
+                                    <div className="d-flex align-items-center gap-2 mt-2 mt-sm-0">
+                                        <small className="text-muted">Spin duration (s):</small>
+                                        <Form.Control
+                                            type="number"
+                                            value={spinDuration}
+                                            onChange={(e) => setSpinDuration(Number(e.target.value))}
+                                            min={0.5}
+                                            step={0.5}
+                                            style={{ width: 110 }}
+                                            disabled={isRunning}
+                                        />
+                                        <small className="text-muted">(approx)</small>
+                                    </div>
                                 </div>
 
-                                {/* Spin duration control */}
-                                <div className="d-flex align-items-center gap-2 mt-2 mt-sm-0">
-                                    <small className="text-muted">Spin duration (s):</small>
-                                    <Form.Control
-                                        type="number"
-                                        value={spinDuration}
-                                        onChange={(e) => setSpinDuration(Number(e.target.value))}
-                                        min={0.5}
-                                        step={0.5}
-                                        style={{ width: 110 }}
-                                        disabled={isRunning}
-                                    />
-                                    <small className="text-muted">(approx)</small>
-                                </div>
-                            </div>
-
-                            {/* Decisions list - stacked column */}
-                            <Row className="mt-3">
-                                <Col xs={12}>
-                                    {decisions.length === 0 ? (
-                                        <div className="text-center text-muted py-3">No decisions yet — add one above.</div>
-                                    ) : (
-                                        <ListGroup>
-                                            {decisions.map((d, i) => (
-                                                <ListGroup.Item
-                                                    key={i}
-                                                    className="d-flex justify-content-between align-items-center"
-                                                    active={i === activeIndex}
-                                                >
-                                                    <div className="d-flex align-items-center gap-2">
-                                                        <div style={{ minWidth: 8, minHeight: 8 }}>
-                                                            {/* small bullet (optional) */}
+                                {/* Decisions list - stacked column */}
+                                <Row className="mt-3">
+                                    <Col xs={12}>
+                                        {decisions.length === 0 ? (
+                                            <div className="text-center text-muted py-3">No decisions yet — add one above.</div>
+                                        ) : (
+                                            <ListGroup>
+                                                {decisions.map((d, i) => (
+                                                    <ListGroup.Item
+                                                        key={i}
+                                                        className="d-flex justify-content-between align-items-center"
+                                                        active={i === activeIndex}
+                                                    >
+                                                        <div className="d-flex align-items-center gap-2">
+                                                            <div style={{ minWidth: 8, minHeight: 8 }}>
+                                                                {/* small bullet (optional) */}
+                                                            </div>
+                                                            <div>{d}</div>
                                                         </div>
-                                                        <div>{d}</div>
-                                                    </div>
 
-                                                    <div className="d-flex align-items-center gap-2">
-                                                        {i === activeIndex && !isRunning && (
-                                                            <Badge bg="warning" text="dark">
-                                                                Selected
-                                                            </Badge>
-                                                        )}
-                                                        <Button
-                                                            size="sm"
-                                                            variant="outline-danger"
-                                                            onClick={() => removeDecision(i)}
-                                                            disabled={isRunning}
-                                                        >
-                                                            Remove
-                                                        </Button>
-                                                    </div>
-                                                </ListGroup.Item>
-                                            ))}
-                                        </ListGroup>
-                                    )}
-                                </Col>
-                            </Row>
+                                                        <div className="d-flex align-items-center gap-2">
+                                                            {i === activeIndex && !isRunning && (
+                                                                <Badge bg="warning" text="dark">
+                                                                    Selected
+                                                                </Badge>
+                                                            )}
+                                                            <Button
+                                                                size="sm"
+                                                                variant="outline-danger"
+                                                                onClick={() => removeDecision(i)}
+                                                                disabled={isRunning}
+                                                            >
+                                                                Remove
+                                                            </Button>
+                                                        </div>
+                                                    </ListGroup.Item>
+                                                ))}
+                                            </ListGroup>
+                                        )}
+                                    </Col>
+                                </Row>
 
-                            {/* Small help text */}
-                            <Row className="mt-3">
-                                <Col xs={12} className="text-muted small">
-                                    Tip: Use <strong>Spin duration</strong> to control how long the cycle feels. Save sets of
-                                    decisions as presets to reuse them later. Presets are stored locally in your browser.
-                                </Col>
-                            </Row>
-                        </Card.Body>
-                    </Card>
-                </Col>
-            </Row>
+                                {/* Small help text */}
+                                <Row className="mt-3">
+                                    <Col xs={12} className="text-muted small">
+                                        Tip: Use <strong>Spin duration</strong> to control how long the cycle feels. Save sets of
+                                        decisions as presets to reuse them later. Presets are stored locally in your browser.
+                                    </Col>
+                                </Row>
+                            </Card.Body>
+                        </Card>
+                    </Col>
+                </Row>
+            </main>
 
             {/* Presets Modal */}
             <Modal show={showPresetModal} onHide={closePresetModal} size="lg">
@@ -465,6 +472,25 @@ export default function DecisionMakerApp() {
                     </Button>
                 </Modal.Footer>
             </Modal>
+
+            {/* Footer with author and GitHub link */}
+            <footer className="pt-3 w-100 bg-white border-top mt-auto">
+                <Container>
+                    <div className="d-flex justify-content-center align-items-center gap-2 small">
+                        <span className="text-muted">Made with 💖 by Andy</span>
+                        <a
+                            href={GITHUB_URL}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-dark d-inline-flex align-items-center gap-1"
+                            aria-label="GitHub"
+                        >
+                            <i className="bi bi-github" style={{ fontSize: 16 }} />
+                            <span>GitHub</span>
+                        </a>
+                    </div>
+                </Container>
+            </footer>
         </Container>
     );
 }
