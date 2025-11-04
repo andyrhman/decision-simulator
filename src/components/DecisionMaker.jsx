@@ -311,13 +311,13 @@ export default function DecisionMakerApp() {
                                         Clear All
                                     </Button>
 
-                                    {/* <Button variant="outline-secondary" onClick={() => openSavePresetModal()} disabled={decisions.length === 0}>
+                                    <Button variant="outline-secondary" onClick={() => openSavePresetModal()} disabled={decisions.length === 0}>
                                         Save Preset
                                     </Button>
 
                                     <Button variant="outline-info" onClick={() => setShowPresetModal(true)}>
                                         Presets ({presets.length})
-                                    </Button> */}
+                                    </Button>
                                 </div>
 
                                 {/* Spin duration control */}
