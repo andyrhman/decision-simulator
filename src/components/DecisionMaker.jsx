@@ -12,6 +12,7 @@ import {
     Card,
     Badge,
     Modal,
+    ProgressBar,
 } from "react-bootstrap";
 
 const GITHUB_URL = "https://github.com/andyrhman";
@@ -48,7 +49,6 @@ export default function DecisionMakerApp() {
     const [decisions, setDecisions] = useState(() => readDecisionsFromStorage());
     const [activeIndex, setActiveIndex] = useState(-1);
     const [isRunning, setIsRunning] = useState(false);
-    const [spinDuration, setSpinDuration] = useState(3); // seconds (user-configurable)
 
     // Presets (saved decision sets)
     const [presets, setPresets] = useState(() => readPresetsFromStorage());
@@ -60,8 +60,17 @@ export default function DecisionMakerApp() {
     const spinTimeoutRef = useRef(null);
     const spinRunningRef = useRef(false);
 
+    // Progress & dice refs
+    const progressIntervalRef = useRef(null);
+    const startTimeRef = useRef(null);
+
     // NEW: flag to avoid overwriting localStorage on first render
     const presetsLoadedRef = useRef(false);
+
+    // Dice/progress state
+    const [diceRoll, setDiceRoll] = useState(null); // 1..6
+    const [diceDurationSec, setDiceDurationSec] = useState(null); // seconds
+    const [progress, setProgress] = useState(0); // 0..100
 
     // Load saved decisions & presets from localStorage once (with validation)
     useEffect(() => {
@@ -125,6 +134,7 @@ export default function DecisionMakerApp() {
     useEffect(() => {
         return () => {
             if (spinTimeoutRef.current) clearTimeout(spinTimeoutRef.current);
+            if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
             spinRunningRef.current = false;
         };
     }, []);
@@ -224,27 +234,70 @@ export default function DecisionMakerApp() {
     }
 
     // -----------------
-    // Spin logic (using ref to avoid stale closures)
+    // Dice mapping
+    // -----------------
+    const DICE_DURATIONS = {
+        1: 3,
+        2: 5,
+        3: 7,
+        4: 8,
+        5: 9,
+        6: 10,
+    };
+
+    // -----------------
+    // Spin logic (dice-driven) + progress
     // -----------------
     function stopSpin() {
         if (spinTimeoutRef.current) {
             clearTimeout(spinTimeoutRef.current);
             spinTimeoutRef.current = null;
         }
+        if (progressIntervalRef.current) {
+            clearInterval(progressIntervalRef.current);
+            progressIntervalRef.current = null;
+        }
         spinRunningRef.current = false;
         setIsRunning(false);
+        setProgress(0);
+        // keep diceRoll/diceDurationSec visible for feedback
     }
 
     function startDecision() {
         if (isRunning) return;
         if (decisions.length === 0) return;
 
+        // roll dice
+        const roll = Math.floor(Math.random() * 6) + 1;
+        const chosenSec = DICE_DURATIONS[roll];
+        setDiceRoll(roll);
+        setDiceDurationSec(chosenSec);
+
+        const desiredMs = Math.max(300, Math.round(chosenSec * 1000));
+
         spinRunningRef.current = true;
         setIsRunning(true);
+        setProgress(0);
+        startTimeRef.current = Date.now();
 
+        // progress updater
+        if (progressIntervalRef.current) {
+            clearInterval(progressIntervalRef.current);
+            progressIntervalRef.current = null;
+        }
+        progressIntervalRef.current = setInterval(() => {
+            const elapsed = Date.now() - startTimeRef.current;
+            const pct = Math.min(100, Math.round((elapsed / desiredMs) * 100));
+            setProgress(pct);
+            if (elapsed >= desiredMs) {
+                clearInterval(progressIntervalRef.current);
+                progressIntervalRef.current = null;
+            }
+        }, 40);
+
+        // spin animation ticks (accelerate then decelerate)
         const baseDelay = 30; // ms
-        const estimatedFactor = 11; // heuristic
-        const desiredMs = Math.max(300, Math.round(spinDuration * 1000));
+        const estimatedFactor = 11;
         const totalTicks = Math.max(10, Math.round(desiredMs / (baseDelay * estimatedFactor)));
 
         const startFrom = activeIndex >= 0 && activeIndex < decisions.length ? activeIndex : 0;
@@ -253,23 +306,36 @@ export default function DecisionMakerApp() {
         let tick = 0;
 
         function step() {
-            const progress = tick / totalTicks;
-            const multiplier = 1 + Math.pow(progress, 3) * 40;
+            const progressRatio = tick / totalTicks;
+            const multiplier = 1 + Math.pow(progressRatio, 3) * 40;
             const delay = Math.round(baseDelay * multiplier);
 
             spinTimeoutRef.current = setTimeout(() => {
                 setActiveIndex((old) => (old + 1) % decisions.length);
                 tick += 1;
-                if (tick <= totalTicks && spinRunningRef.current) {
+
+                const elapsed = Date.now() - startTimeRef.current;
+
+                if (tick <= totalTicks && spinRunningRef.current && elapsed < desiredMs) {
                     step();
                 } else {
                     if (spinRunningRef.current) {
+                        // final pick: random index (reduces deterministic bias)
                         const final = Math.floor(Math.random() * decisions.length);
                         setActiveIndex(final);
                     }
+                    // cleanup
+                    if (spinTimeoutRef.current) {
+                        clearTimeout(spinTimeoutRef.current);
+                        spinTimeoutRef.current = null;
+                    }
+                    if (progressIntervalRef.current) {
+                        clearInterval(progressIntervalRef.current);
+                        progressIntervalRef.current = null;
+                    }
                     spinRunningRef.current = false;
                     setIsRunning(false);
-                    spinTimeoutRef.current = null;
+                    setProgress(100);
                 }
             }, delay);
         }
@@ -291,6 +357,22 @@ export default function DecisionMakerApp() {
                         <Card className="shadow-sm" style={{ maxHeight: '80vh', overflow: 'auto' }}>
                             <Card.Body>
                                 <h3 className="text-center mb-3">Decision Simulator 🎲</h3>
+
+                                {/* Dice info + progress (kept compact to preserve layout) */}
+                                <div className="d-flex justify-content-between align-items-center mb-2">
+                                    <div>
+                                        {diceRoll ? (
+                                            <div className="small text-muted">
+                                                Rolled: <Badge bg="info">{diceRoll}</Badge> → {diceDurationSec}s
+                                            </div>
+                                        ) : (
+                                            <div className="small text-muted">Roll a dice when you start the spin</div>
+                                        )}
+                                    </div>
+                                    <div style={{ width: 180 }}>
+                                        <ProgressBar now={progress} label={progress ? `${progress}%` : ""} />
+                                    </div>
+                                </div>
 
                                 {/* Input row */}
                                 <Form onSubmit={addDecision}>
@@ -351,21 +433,6 @@ export default function DecisionMakerApp() {
                                             Presets ({presets.length})
                                         </Button>
                                     </div>
-
-                                    {/* Spin duration control */}
-                                    <div className="d-flex align-items-center gap-2 mt-2 mt-sm-0">
-                                        <small className="text-muted">Spin duration (s):</small>
-                                        <Form.Control
-                                            type="number"
-                                            value={spinDuration}
-                                            onChange={(e) => setSpinDuration(Number(e.target.value))}
-                                            min={0.5}
-                                            step={0.5}
-                                            style={{ width: 110 }}
-                                            disabled={isRunning}
-                                        />
-                                        <small className="text-muted">(approx)</small>
-                                    </div>
                                 </div>
 
                                 {/* Decisions list - stacked column */}
@@ -413,7 +480,7 @@ export default function DecisionMakerApp() {
                                 {/* Small help text */}
                                 <Row className="mt-3">
                                     <Col xs={12} className="text-muted small">
-                                        Tip: Use <strong>Spin duration</strong> to control how long the cycle feels. Save sets of
+                                        <strong>Tip</strong>: The app will roll a dice and use the mapped duration. Save sets of
                                         decisions as presets to reuse them later. Presets are stored locally in your browser.
                                     </Col>
                                 </Row>
