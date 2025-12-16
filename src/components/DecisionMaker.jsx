@@ -16,121 +16,126 @@ import {
 } from "react-bootstrap";
 
 const GITHUB_URL = "https://github.com/andyrhman";
+const DICE_STORAGE_KEY = "dice_v1";
 
-// Default export so this file can be used as App or imported into App.js
+const DEFAULT_DICE = [
+    { num: 1, sec: 3 },
+    { num: 2, sec: 5 },
+    { num: 3, sec: 7 },
+    { num: 4, sec: 8 },
+    { num: 5, sec: 9 },
+    { num: 6, sec: 10 },
+];
+
 export default function DecisionMakerApp() {
-    // Helper to safely parse localStorage value for an array or object
+    function readFromStorage(key, fallback = []) {
+        try {
+            const raw = localStorage.getItem(key);
+            if (!raw) return fallback;
+            const parsed = JSON.parse(raw);
+            return parsed;
+        } catch (err) {
+            console.warn("readFromStorage error", key, err);
+            return fallback;
+        }
+    }
     function readPresetsFromStorage() {
-        try {
-            const raw = localStorage.getItem("presets_v1");
-            if (!raw) return [];
-            const parsed = JSON.parse(raw);
-            if (Array.isArray(parsed)) return parsed;
-            if (parsed && typeof parsed === "object") return [parsed];
-        } catch (err) {
-            console.warn("readPresetsFromStorage error:", err);
-        }
-        return [];
+        return readFromStorage("presets_v1", []);
     }
-
     function readDecisionsFromStorage() {
-        try {
-            const raw = localStorage.getItem("decisions_v1");
-            if (!raw) return [];
-            const parsed = JSON.parse(raw);
-            if (Array.isArray(parsed)) return parsed;
-        } catch (err) {
-            console.warn("readDecisionsFromStorage error:", err);
+        return readFromStorage("decisions_v1", []);
+    }
+    function readHistoryFromStorage() {
+        return readFromStorage("history_v1", []);
+    }
+    function readDiceFromStorage() {
+        const d = readFromStorage(DICE_STORAGE_KEY, null);
+        // Expect an array of {num, sec}. Fallback to default if structure invalid.
+        if (Array.isArray(d) && d.every((x) => x && typeof x.num === "number" && typeof x.sec === "number")) {
+            return d;
         }
-        return [];
+        return DEFAULT_DICE.slice();
     }
 
+    // --- state ---
     const [input, setInput] = useState("");
     const [decisions, setDecisions] = useState(() => readDecisionsFromStorage());
     const [activeIndex, setActiveIndex] = useState(-1);
     const [isRunning, setIsRunning] = useState(false);
 
-    // Presets (saved decision sets)
+    // presets
     const [presets, setPresets] = useState(() => readPresetsFromStorage());
     const [showPresetModal, setShowPresetModal] = useState(false);
     const [presetName, setPresetName] = useState("");
     const [editingPresetId, setEditingPresetId] = useState(null);
 
-    // Refs used to coordinate async timers and avoid stale closures
-    const spinTimeoutRef = useRef(null);
-    const spinRunningRef = useRef(false);
+    // history
+    const [showHistoryModal, setShowHistoryModal] = useState(false);
+    const [historyEntries, setHistoryEntries] = useState(() => readHistoryFromStorage());
+    const [historyPage, setHistoryPage] = useState(1);
+    const HISTORY_PAGE_SIZE = 10;
 
-    // Progress & dice refs
+    // dice / settings
+    const [diceSettings, setDiceSettings] = useState(() => readDiceFromStorage());
+    const [showSettingsModal, setShowSettingsModal] = useState(false);
+
+    // UI dice/progress
+    const [diceRoll, setDiceRoll] = useState(null);
+    const [diceDurationSec, setDiceDurationSec] = useState(null);
+    const [progress, setProgress] = useState(0);
+
+    // refs
+    const spinTimeoutRef = useRef(null);
     const progressIntervalRef = useRef(null);
     const startTimeRef = useRef(null);
-
-    // NEW: flag to avoid overwriting localStorage on first render
+    const spinRunningRef = useRef(false);
     const presetsLoadedRef = useRef(false);
 
-    // Dice/progress state
-    const [diceRoll, setDiceRoll] = useState(null); // 1..6
-    const [diceDurationSec, setDiceDurationSec] = useState(null); // seconds
-    const [progress, setProgress] = useState(0); // 0..100
-
-    // Load saved decisions & presets from localStorage once (with validation)
+    // --- normalize/load on mount ---
     useEffect(() => {
-        try {
-            const raw = localStorage.getItem("decisions_v1");
-            if (raw) {
-                const parsed = JSON.parse(raw);
-                if (Array.isArray(parsed)) setDecisions(parsed);
-            }
-        } catch (e) {
-            console.warn("Failed to load decisions:", e);
-        }
-
         try {
             const p = localStorage.getItem("presets_v1");
             if (p) {
                 const parsed = JSON.parse(p);
-                // Accept either an array of presets or a single preset object (backward compatibility)
-                if (Array.isArray(parsed)) {
-                    setPresets(parsed);
-                } else if (parsed && typeof parsed === "object") {
-                    // If someone accidentally saved a single object (you showed this in your log),
-                    // convert it into an array so we don't drop it.
+                if (Array.isArray(parsed)) setPresets(parsed);
+                else if (parsed && typeof parsed === "object") {
                     setPresets([parsed]);
-                    // Also immediately re-write as array to normalize the stored format.
                     try {
                         localStorage.setItem("presets_v1", JSON.stringify([parsed]));
-                    } catch (err) {
-                        console.warn("Failed to normalize presets in storage:", err);
-                    }
+                    } catch (err) { }
                 }
             }
         } catch (e) {
-            console.warn("Failed to load presets:", e);
+            console.warn(e);
         } finally {
-            // mark presets as loaded so the saving effect won't overwrite them immediately
             presetsLoadedRef.current = true;
         }
     }, []);
 
-    // Save decisions to localStorage on changes
+    // autosave decisions/presets/history/diceSettings
     useEffect(() => {
         try {
             localStorage.setItem("decisions_v1", JSON.stringify(decisions));
-        } catch (e) {
-            console.warn("Failed to save decisions:", e);
-        }
+        } catch (e) { }
     }, [decisions]);
-
-    // Keep presets persisted, but avoid writing during initial mount before load completes.
     useEffect(() => {
         if (!presetsLoadedRef.current) return;
         try {
             localStorage.setItem("presets_v1", JSON.stringify(presets));
-        } catch (e) {
-            console.warn("Failed to save presets:", e);
-        }
+        } catch (e) { }
     }, [presets]);
+    useEffect(() => {
+        try {
+            localStorage.setItem("history_v1", JSON.stringify(historyEntries));
+        } catch (e) { }
+    }, [historyEntries]);
+    useEffect(() => {
+        try {
+            localStorage.setItem(DICE_STORAGE_KEY, JSON.stringify(diceSettings));
+        } catch (e) { }
+    }, [diceSettings]);
 
-    // Cleanup timer on unmount
+    // cleanup timers on unmount
     useEffect(() => {
         return () => {
             if (spinTimeoutRef.current) clearTimeout(spinTimeoutRef.current);
@@ -139,28 +144,24 @@ export default function DecisionMakerApp() {
         };
     }, []);
 
+    // --- helpers: decisions/presets/history ---
     function addDecision(e) {
         e?.preventDefault();
-        const trimmed = input.trim();
-        if (!trimmed) return;
-        setDecisions((d) => [...d, trimmed]);
+        const t = input.trim();
+        if (!t) return;
+        setDecisions((d) => [...d, t]);
         setInput("");
         if (activeIndex === -1) setActiveIndex(0);
     }
-
     function removeDecision(idx) {
         setDecisions((d) => d.filter((_, i) => i !== idx));
         setActiveIndex((old) => (old === idx ? -1 : old > idx ? old - 1 : old));
     }
-
     function clearAll() {
         setDecisions([]);
         setActiveIndex(-1);
     }
 
-    // -----------------
-    // Preset functions (robust persistence)
-    // -----------------
     function openSavePresetModal(editId = null) {
         if (editId) {
             const p = presets.find((x) => x.id === editId);
@@ -174,27 +175,20 @@ export default function DecisionMakerApp() {
         }
         setShowPresetModal(true);
     }
-
     function closePresetModal() {
         setShowPresetModal(false);
         setPresetName("");
         setEditingPresetId(null);
     }
-
     function savePreset() {
-        // clone the decisions array to make a snapshot (so future changes don't mutate preset)
         const snapshot = decisions.slice();
         const nameTrim = presetName.trim() || `Preset ${new Date().toLocaleString()}`;
-
         if (editingPresetId) {
             setPresets((ps) => {
                 const updated = ps.map((p) => (p.id === editingPresetId ? { ...p, name: nameTrim, decisions: snapshot } : p));
                 try {
-                    // immediate write in case the user reloads right after saving
                     localStorage.setItem("presets_v1", JSON.stringify(updated));
-                } catch (err) {
-                    console.warn("Failed to write presets immediately:", err);
-                }
+                } catch (err) { }
                 return updated;
             });
         } else {
@@ -203,16 +197,12 @@ export default function DecisionMakerApp() {
                 const updated = [...ps, { id, name: nameTrim, decisions: snapshot }];
                 try {
                     localStorage.setItem("presets_v1", JSON.stringify(updated));
-                } catch (err) {
-                    console.warn("Failed to write presets immediately:", err);
-                }
+                } catch (err) { }
                 return updated;
             });
         }
-
         closePresetModal();
     }
-
     function applyPreset(id) {
         const p = presets.find((x) => x.id === id);
         if (p && Array.isArray(p.decisions)) {
@@ -220,35 +210,190 @@ export default function DecisionMakerApp() {
             setActiveIndex(p.decisions.length > 0 ? 0 : -1);
         }
     }
-
     function deletePreset(id) {
         setPresets((ps) => {
             const updated = ps.filter((p) => p.id !== id);
             try {
                 localStorage.setItem("presets_v1", JSON.stringify(updated));
-            } catch (err) {
-                console.warn("Failed to write presets immediately:", err);
-            }
+            } catch (err) { }
             return updated;
         });
     }
 
-    // -----------------
-    // Dice mapping
-    // -----------------
-    const DICE_DURATIONS = {
-        1: 3,
-        2: 5,
-        3: 7,
-        4: 8,
-        5: 9,
-        6: 10,
-    };
+    // --- history helpers ---
+    function addHistoryEntry(decisionText) {
+        if (!decisionText) return;
+        const entry = { id: Date.now().toString(), decision: decisionText, timestamp: new Date().toISOString() };
+        setHistoryEntries((h) => [entry, ...h]);
+    }
+    function openHistoryModal() {
+        const h = readHistoryFromStorage();
+        setHistoryEntries(h);
+        setHistoryPage(1);
+        setShowHistoryModal(true);
+    }
+    function closeHistoryModal() {
+        setShowHistoryModal(false);
+    }
+    function clearHistory() {
+        setHistoryEntries([]);
+        try {
+            localStorage.removeItem("history_v1");
+        } catch (e) { }
+    }
 
-    // -----------------
-    // Spin logic (dice-driven) + progress
-    // -----------------
+    const historyTotalPages = Math.max(1, Math.ceil(historyEntries.length / HISTORY_PAGE_SIZE));
+    function historyPageSlice() {
+        const start = (historyPage - 1) * HISTORY_PAGE_SIZE;
+        return historyEntries.slice(start, start + HISTORY_PAGE_SIZE);
+    }
+    function goHistoryPrev() {
+        setHistoryPage((p) => Math.max(1, p - 1));
+    }
+    function goHistoryNext() {
+        setHistoryPage((p) => Math.min(historyTotalPages, p + 1));
+    }
+
+    // --- settings modal (local edit state & validation) ---
+    // We'll keep an independent edit copy while modal is open.
+    const [diceEdit, setDiceEdit] = useState([]);
+    const [diceEditErrors, setDiceEditErrors] = useState({}); // { idx: { num: 'msg', sec: 'msg' } }
+    const [settingsSaveError, setSettingsSaveError] = useState("");
+
+    function openSettingsModal() {
+        // copy current dice settings into editable array
+        setDiceEdit(diceSettings.map((d) => ({ num: d.num, sec: d.sec })));
+        setDiceEditErrors({});
+        setSettingsSaveError("");
+        setShowSettingsModal(true);
+    }
+    function closeSettingsModal() {
+        setShowSettingsModal(false);
+        setDiceEditErrors({});
+        setSettingsSaveError("");
+    }
+
+    // validation function returns errors object
+    function validateDiceArray(arr) {
+        const errors = {};
+        // numbers must be integer 1..50, sec must be number 1..60
+        // numbers unique
+        const seen = new Map();
+        arr.forEach((it, idx) => {
+            const rowErr = {};
+            // num validation
+            if (it.num === "" || it.num === null || it.num === undefined || Number.isNaN(Number(it.num))) {
+                rowErr.num = "Number required";
+            } else {
+                const n = Number(it.num);
+                if (!Number.isInteger(n)) rowErr.num = "Must be integer";
+                else if (n < 1 || n > 50) rowErr = { ...rowErr, num: "Must be 1–50" };
+                else {
+                    if (seen.has(n)) {
+                        // mark duplicate on both entries
+                        rowErr.num = "Duplicate number";
+                        const otherIdx = seen.get(n);
+                        errors[otherIdx] = errors[otherIdx] || {};
+                        errors[otherIdx].num = "Duplicate number";
+                    } else seen.set(n, idx);
+                }
+            }
+            // sec validation
+            if (it.sec === "" || it.sec === null || it.sec === undefined || Number.isNaN(Number(it.sec))) {
+                rowErr.sec = "Duration required";
+            } else {
+                const s = Number(it.sec);
+                if (s <= 0 || s > 60) rowErr.sec = "Must be >0 and ≤60";
+            }
+            if (Object.keys(rowErr).length) errors[idx] = rowErr;
+        });
+        // global constraint: at least 2 faces
+        if (arr.length < 2) {
+            setSettingsSaveError("Dice must have at least 2 faces.");
+        } else {
+            // reset only if no other global error
+            setSettingsSaveError("");
+        }
+        return errors;
+    }
+
+    function onDiceEditChange(idx, field, value) {
+        setDiceEdit((prev) => {
+            const copy = prev.map((r) => ({ ...r }));
+            if (field === "num") copy[idx].num = value === "" ? "" : Number(value);
+            else if (field === "sec") copy[idx].sec = value === "" ? "" : Number(value);
+            return copy;
+        });
+        // revalidate on change
+        setTimeout(() => {
+            const errs = validateDiceArray(
+                (idx === undefined ? diceEdit : // fallback in case state not updated yet
+                    // create the prospective array with this change applied
+                    (function () {
+                        const arr = diceEdit.map((r) => ({ ...r }));
+                        arr[idx] = { ...arr[idx], [field]: field === "num" ? (value === "" ? "" : Number(value)) : (value === "" ? "" : Number(value)) };
+                        return arr;
+                    })())
+            );
+            setDiceEditErrors(errs);
+        }, 0);
+    }
+
+    function addDiceRow() {
+        // find smallest unused number from 1..50
+        const used = new Set(diceEdit.map((d) => Number(d.num)).filter((n) => !Number.isNaN(n)));
+        let next = 1;
+        while (used.has(next) && next <= 50) next++;
+        if (next > 50) {
+            setSettingsSaveError("Cannot add more faces — all numbers 1..50 used.");
+            return;
+        }
+        const newRow = { num: next, sec: 3 };
+        setDiceEdit((p) => [...p, newRow]);
+        setTimeout(() => {
+            const errs = validateDiceArray([...diceEdit, newRow]);
+            setDiceEditErrors(errs);
+        }, 0);
+    }
+
+    function deleteDiceRow(idx) {
+        if (diceEdit.length <= 2) return; // guarded UI will prevent, but double-check
+        setDiceEdit((p) => p.filter((_, i) => i !== idx));
+        setTimeout(() => {
+            const arr = diceEdit.filter((_, i) => i !== idx);
+            const errs = validateDiceArray(arr);
+            setDiceEditErrors(errs);
+        }, 0);
+    }
+
+    function resetDiceToDefaults() {
+        setDiceEdit(DEFAULT_DICE.map((d) => ({ num: d.num, sec: d.sec })));
+        setDiceEditErrors({});
+        setSettingsSaveError("");
+    }
+
+    function saveSettingsFromModal() {
+        // validate
+        const errs = validateDiceArray(diceEdit);
+        setDiceEditErrors(errs);
+        if (Object.keys(errs).length > 0 || diceEdit.length < 2) {
+            setSettingsSaveError("Fix validation errors before saving.");
+            return;
+        }
+        // normalize: sort by dice number ascending (optional)
+        const normalized = diceEdit
+            .map((r) => ({ num: Number(r.num), sec: Number(r.sec) }))
+            .sort((a, b) => a.num - b.num);
+        setDiceSettings(normalized);
+        try {
+            localStorage.setItem(DICE_STORAGE_KEY, JSON.stringify(normalized));
+        } catch (e) { }
+        setShowSettingsModal(false);
+    }
+
+    // --- spin logic (dice-driven) ---
     function stopSpin() {
+        const wasRunning = spinRunningRef.current;
         if (spinTimeoutRef.current) {
             clearTimeout(spinTimeoutRef.current);
             spinTimeoutRef.current = null;
@@ -259,18 +404,26 @@ export default function DecisionMakerApp() {
         }
         spinRunningRef.current = false;
         setIsRunning(false);
+        if (wasRunning && activeIndex >= 0 && decisions[activeIndex]) {
+            try {
+                addHistoryEntry(decisions[activeIndex]);
+            } catch (err) { }
+        }
         setProgress(0);
-        // keep diceRoll/diceDurationSec visible for feedback
     }
 
     function startDecision() {
         if (isRunning) return;
         if (decisions.length === 0) return;
 
-        // roll dice
-        const roll = Math.floor(Math.random() * 6) + 1;
-        const chosenSec = DICE_DURATIONS[roll];
-        setDiceRoll(roll);
+        // pick a random face from current diceSettings
+        const faces = Array.isArray(diceSettings) && diceSettings.length > 0 ? diceSettings : DEFAULT_DICE;
+        const idx = Math.floor(Math.random() * faces.length);
+        const face = faces[idx];
+        const rollNumber = face.num;
+        const chosenSec = face.sec;
+
+        setDiceRoll(rollNumber);
         setDiceDurationSec(chosenSec);
 
         const desiredMs = Math.max(300, Math.round(chosenSec * 1000));
@@ -295,8 +448,8 @@ export default function DecisionMakerApp() {
             }
         }, 40);
 
-        // spin animation ticks (accelerate then decelerate)
-        const baseDelay = 30; // ms
+        // spin animation ticks
+        const baseDelay = 30;
         const estimatedFactor = 11;
         const totalTicks = Math.max(10, Math.round(desiredMs / (baseDelay * estimatedFactor)));
 
@@ -320,11 +473,12 @@ export default function DecisionMakerApp() {
                     step();
                 } else {
                     if (spinRunningRef.current) {
-                        // final pick: random index (reduces deterministic bias)
                         const final = Math.floor(Math.random() * decisions.length);
                         setActiveIndex(final);
+                        try {
+                            addHistoryEntry(decisions[final]);
+                        } catch (err) { }
                     }
-                    // cleanup
                     if (spinTimeoutRef.current) {
                         clearTimeout(spinTimeoutRef.current);
                         spinTimeoutRef.current = null;
@@ -347,6 +501,8 @@ export default function DecisionMakerApp() {
         setActiveIndex(decisions.length > 0 ? 0 : -1);
     }
 
+
+    // --- render (keeps your exact layout) ---
     return (
         <Container fluid className="d-flex flex-column bg-light">
             {/* Main area - flexes to fill available space; card centered inside */}
@@ -431,6 +587,14 @@ export default function DecisionMakerApp() {
 
                                         <Button variant="outline-info" onClick={() => setShowPresetModal(true)}>
                                             Presets ({presets.length})
+                                        </Button>
+
+                                        <Button variant="outline-dark" onClick={openHistoryModal} className="ms-1">
+                                            History
+                                        </Button>
+
+                                        <Button variant="outline-secondary" onClick={openSettingsModal} className="ms-1">
+                                            Settings
                                         </Button>
                                     </div>
                                 </div>
@@ -537,6 +701,123 @@ export default function DecisionMakerApp() {
                     <Button variant="secondary" onClick={closePresetModal}>
                         Close
                     </Button>
+                </Modal.Footer>
+            </Modal>
+
+            {/* History Modal */}
+            <Modal show={showHistoryModal} onHide={closeHistoryModal} size="lg">
+                <Modal.Header closeButton>
+                    <Modal.Title>Decision History</Modal.Title>
+                </Modal.Header>
+                <Modal.Body>
+                    <div className="d-flex justify-content-between align-items-center mb-3">
+                        <div className="small text-muted">Showing {historyEntries.length} entries</div>
+                        <div className="d-flex gap-2">
+                            <Button size="sm" variant="outline-secondary" onClick={goHistoryPrev} disabled={historyPage <= 1}>
+                                Prev
+                            </Button>
+                            <div className="small align-self-center">Page {historyPage} / {historyTotalPages}</div>
+                            <Button size="sm" variant="outline-secondary" onClick={goHistoryNext} disabled={historyPage >= historyTotalPages}>
+                                Next
+                            </Button>
+                            <Button size="sm" variant="outline-danger" onClick={clearHistory} className="ms-2">Clear</Button>
+                        </div>
+                    </div>
+
+                    {historyEntries.length === 0 ? (
+                        <div className="text-muted">No history yet.</div>
+                    ) : (
+                        <ListGroup>
+                            {historyPageSlice().map((h) => (
+                                <ListGroup.Item key={h.id} className="d-flex justify-content-between align-items-center">
+                                    <div>
+                                        <div style={{ wordBreak: 'break-word' }}>{h.decision}</div>
+                                        <div className="small text-muted">{new Date(h.timestamp).toLocaleString()}</div>
+                                    </div>
+                                </ListGroup.Item>
+                            ))}
+                        </ListGroup>
+                    )}
+                </Modal.Body>
+                <Modal.Footer>
+                    <Button variant="secondary" onClick={closeHistoryModal}>Close</Button>
+                </Modal.Footer>
+            </Modal>
+
+            {/* Settings Modal */}
+            <Modal show={showSettingsModal} onHide={closeSettingsModal} size="lg">
+                <Modal.Header closeButton>
+                    <Modal.Title>Dice Settings</Modal.Title>
+                </Modal.Header>
+                <Modal.Body>
+                    <p className="small text-muted">Edit dice faces and their durations. Dice numbers must be unique (1–50). Durations 1–60 seconds. Minimum 2 faces.</p>
+
+                    {/* table-like list */}
+                    <div className="mb-2">
+                        {diceEdit.length === 0 ? (
+                            <div className="text-muted">No faces — add one.</div>
+                        ) : (
+                            <ListGroup>
+                                {diceEdit.map((row, idx) => {
+                                    const rowErr = diceEditErrors[idx] || {};
+                                    return (
+                                        <ListGroup.Item key={idx} className="d-flex align-items-center gap-3">
+                                            <div style={{ width: 90 }}>
+                                                <Form.Group controlId={`dice-num-${idx}`}>
+                                                    <Form.Label className="small mb-1">Dice number</Form.Label>
+                                                    <Form.Control
+                                                        type="number"
+                                                        value={row.num}
+                                                        min={1}
+                                                        max={50}
+                                                        isInvalid={!!rowErr.num}
+                                                        onChange={(e) => onDiceEditChange(idx, "num", e.target.value === "" ? "" : Number(e.target.value))}
+                                                    />
+                                                    <div className="invalid-feedback" style={{ display: rowErr.num ? "block" : "none" }}>
+                                                        {rowErr.num}
+                                                    </div>
+                                                </Form.Group>
+                                            </div>
+
+                                            <div style={{ width: 140 }}>
+                                                <Form.Group controlId={`dice-sec-${idx}`}>
+                                                    <Form.Label className="small mb-1">Duration (s)</Form.Label>
+                                                    <Form.Control
+                                                        type="number"
+                                                        value={row.sec}
+                                                        min={1}
+                                                        max={60}
+                                                        isInvalid={!!rowErr.sec}
+                                                        onChange={(e) => onDiceEditChange(idx, "sec", e.target.value === "" ? "" : Number(e.target.value))}
+                                                    />
+                                                    <div className="invalid-feedback" style={{ display: rowErr.sec ? "block" : "none" }}>
+                                                        {rowErr.sec}
+                                                    </div>
+                                                </Form.Group>
+                                            </div>
+
+                                            <div className="ms-auto d-flex gap-2">
+                                                <Button size="sm" variant="outline-danger" onClick={() => deleteDiceRow(idx)} disabled={diceEdit.length <= 2}>
+                                                    Delete
+                                                </Button>
+                                            </div>
+                                        </ListGroup.Item>
+                                    );
+                                })}
+                            </ListGroup>
+                        )}
+                    </div>
+
+                    <div className="d-flex gap-2">
+                        <Button onClick={addDiceRow}>Add Face</Button>
+                        <Button variant="outline-secondary" onClick={resetDiceToDefaults}>Reset to Defaults</Button>
+                    </div>
+
+                    {settingsSaveError && <div className="mt-3 text-danger small">{settingsSaveError}</div>}
+                </Modal.Body>
+                <Modal.Footer>
+                    <Button variant="secondary" onClick={closeSettingsModal}>Cancel</Button>
+                    <Button variant="primary" onClick={saveSettingsFromModal}>Save Settings</Button>
                 </Modal.Footer>
             </Modal>
 
