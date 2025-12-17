@@ -17,7 +17,11 @@ import {
 
 const GITHUB_URL = "https://github.com/andyrhman";
 const DICE_STORAGE_KEY = "dice_v1";
+const PITY_STORAGE_KEY = "pity_v1";
+const PITY_HARDHITS_KEY = "pity_hardhits_v1";
+const PITY_SETTINGS_KEY = "pity_settings_v1";
 
+// Default dice mapping (used when no saved settings)
 const DEFAULT_DICE = [
     { num: 1, sec: 3 },
     { num: 2, sec: 5 },
@@ -27,62 +31,100 @@ const DEFAULT_DICE = [
     { num: 6, sec: 10 },
 ];
 
+// Default pity settings
+const DEFAULT_PITY_SETTINGS = {
+    enabled: true,
+    softIncrement: 1, // per-miss increment
+    hardThreshold: 12, // guaranteed after this many misses
+    softMultiplierCap: 5, // max multiplier
+    autoResetWhenAllHardHit: false, // auto-reset when all faces hit via hard-pity
+};
+
 export default function DecisionMakerApp() {
-    function readFromStorage(key, fallback = []) {
+    // --- storage helpers ---
+    function readFromStorage(key, fallback = null) {
         try {
             const raw = localStorage.getItem(key);
             if (!raw) return fallback;
-            const parsed = JSON.parse(raw);
-            return parsed;
+            return JSON.parse(raw);
         } catch (err) {
             console.warn("readFromStorage error", key, err);
             return fallback;
         }
     }
-    function readPresetsFromStorage() {
+    function saveToStorage(key, value) {
+        try {
+            localStorage.setItem(key, JSON.stringify(value));
+        } catch (err) {
+            console.warn("saveToStorage error", key, err);
+        }
+    }
+    function readPresets() {
         return readFromStorage("presets_v1", []);
     }
-    function readDecisionsFromStorage() {
+    function readDecisions() {
         return readFromStorage("decisions_v1", []);
     }
-    function readHistoryFromStorage() {
+    function readHistory() {
         return readFromStorage("history_v1", []);
     }
-    function readDiceFromStorage() {
+    function readDice() {
         const d = readFromStorage(DICE_STORAGE_KEY, null);
-        // Expect an array of {num, sec}. Fallback to default if structure invalid.
         if (Array.isArray(d) && d.every((x) => x && typeof x.num === "number" && typeof x.sec === "number")) {
             return d;
         }
         return DEFAULT_DICE.slice();
     }
+    function readPityAll() {
+        return readFromStorage(PITY_STORAGE_KEY, {});
+    }
+    function readPityHardHitsAll() {
+        return readFromStorage(PITY_HARDHITS_KEY, {});
+    }
+    function readPitySettings() {
+        return readFromStorage(PITY_SETTINGS_KEY, DEFAULT_PITY_SETTINGS);
+    }
 
     // --- state ---
     const [input, setInput] = useState("");
-    const [decisions, setDecisions] = useState(() => readDecisionsFromStorage());
+    const [decisions, setDecisions] = useState(() => readDecisions() || []);
     const [activeIndex, setActiveIndex] = useState(-1);
     const [isRunning, setIsRunning] = useState(false);
 
     // presets
-    const [presets, setPresets] = useState(() => readPresetsFromStorage());
+    const [presets, setPresets] = useState(() => readPresets() || []);
     const [showPresetModal, setShowPresetModal] = useState(false);
     const [presetName, setPresetName] = useState("");
     const [editingPresetId, setEditingPresetId] = useState(null);
 
     // history
     const [showHistoryModal, setShowHistoryModal] = useState(false);
-    const [historyEntries, setHistoryEntries] = useState(() => readHistoryFromStorage());
+    const [historyEntries, setHistoryEntries] = useState(() => readHistory() || []);
     const [historyPage, setHistoryPage] = useState(1);
     const HISTORY_PAGE_SIZE = 10;
 
-    // dice / settings
-    const [diceSettings, setDiceSettings] = useState(() => readDiceFromStorage());
-    const [showSettingsModal, setShowSettingsModal] = useState(false);
+    // dice settings (dice modal)
+    const [diceSettings, setDiceSettings] = useState(() => readDice());
+    const [showDiceModal, setShowDiceModal] = useState(false);
+    const [diceEdit, setDiceEdit] = useState([]);
+    const [diceEditErrors, setDiceEditErrors] = useState({});
+
+    // pity (separate modal)
+    const [pityAll, setPityAll] = useState(() => readPityAll());
+    const [pityHardHitsAll, setPityHardHitsAll] = useState(() => readPityHardHitsAll());
+    const [pitySettings, setPitySettings] = useState(() => readPitySettings());
+    const [showPityModal, setShowPityModal] = useState(false);
+    const [pityEdit, setPityEdit] = useState({ ...readPitySettings() });
+    const [pityScopeChoice, setPityScopeChoice] = useState("global");
+    const [settingsSaveError, setSettingsSaveError] = useState("");
 
     // UI dice/progress
     const [diceRoll, setDiceRoll] = useState(null);
     const [diceDurationSec, setDiceDurationSec] = useState(null);
     const [progress, setProgress] = useState(0);
+
+    // preset scope
+    const [currentPresetId, setCurrentPresetId] = useState(null);
 
     // refs
     const spinTimeoutRef = useRef(null);
@@ -94,17 +136,8 @@ export default function DecisionMakerApp() {
     // --- normalize/load on mount ---
     useEffect(() => {
         try {
-            const p = localStorage.getItem("presets_v1");
-            if (p) {
-                const parsed = JSON.parse(p);
-                if (Array.isArray(parsed)) setPresets(parsed);
-                else if (parsed && typeof parsed === "object") {
-                    setPresets([parsed]);
-                    try {
-                        localStorage.setItem("presets_v1", JSON.stringify([parsed]));
-                    } catch (err) { }
-                }
-            }
+            const p = readFromStorage("presets_v1", []);
+            if (p) setPresets(p);
         } catch (e) {
             console.warn(e);
         } finally {
@@ -112,30 +145,15 @@ export default function DecisionMakerApp() {
         }
     }, []);
 
-    // autosave decisions/presets/history/diceSettings
-    useEffect(() => {
-        try {
-            localStorage.setItem("decisions_v1", JSON.stringify(decisions));
-        } catch (e) { }
-    }, [decisions]);
-    useEffect(() => {
-        if (!presetsLoadedRef.current) return;
-        try {
-            localStorage.setItem("presets_v1", JSON.stringify(presets));
-        } catch (e) { }
-    }, [presets]);
-    useEffect(() => {
-        try {
-            localStorage.setItem("history_v1", JSON.stringify(historyEntries));
-        } catch (e) { }
-    }, [historyEntries]);
-    useEffect(() => {
-        try {
-            localStorage.setItem(DICE_STORAGE_KEY, JSON.stringify(diceSettings));
-        } catch (e) { }
-    }, [diceSettings]);
+    // autosave
+    useEffect(() => saveToStorage("decisions_v1", decisions), [decisions]);
+    useEffect(() => { if (presetsLoadedRef.current) saveToStorage("presets_v1", presets); }, [presets]);
+    useEffect(() => saveToStorage("history_v1", historyEntries), [historyEntries]);
+    useEffect(() => saveToStorage(DICE_STORAGE_KEY, diceSettings), [diceSettings]);
+    useEffect(() => saveToStorage(PITY_STORAGE_KEY, pityAll), [pityAll]);
+    useEffect(() => saveToStorage(PITY_HARDHITS_KEY, pityHardHitsAll), [pityHardHitsAll]);
+    useEffect(() => { saveToStorage(PITY_SETTINGS_KEY, pitySettings); setPityEdit({ ...pitySettings }); }, [pitySettings]);
 
-    // cleanup timers on unmount
     useEffect(() => {
         return () => {
             if (spinTimeoutRef.current) clearTimeout(spinTimeoutRef.current);
@@ -144,7 +162,111 @@ export default function DecisionMakerApp() {
         };
     }, []);
 
-    // --- helpers: decisions/presets/history ---
+    // --- helpers ---
+    function decisionKeyFromText(text) { return String(text); }
+    function getScopeKey() { return currentPresetId || "global"; }
+    function readPityForScope(scopeKey) {
+        const k = scopeKey || getScopeKey();
+        const all = readPityAll();
+        return all && all[k] ? { ...all[k] } : {};
+    }
+    function savePityForScope(scopeKey, map) {
+        const k = scopeKey || getScopeKey();
+        setPityAll((prev) => { const copy = { ...(prev || {}) }; copy[k] = { ...(map || {}) }; return copy; });
+    }
+    function loadHardHitsForScope(scopeKey) {
+        const k = scopeKey || getScopeKey();
+        const all = readPityHardHitsAll();
+        return all && Array.isArray(all[k]) ? new Set(all[k]) : new Set();
+    }
+    function saveHardHitsForScope(scopeKey, setOfKeys) {
+        const k = scopeKey || getScopeKey();
+        setPityHardHitsAll((prev) => { const copy = { ...(prev || {}) }; copy[k] = Array.from(setOfKeys || []); return copy; });
+    }
+
+    function weightedRandomIndex(weights) {
+        const total = weights.reduce((s, w) => s + Math.max(0, w), 0);
+        if (total <= 0) return Math.floor(Math.random() * weights.length);
+        let r = Math.random() * total;
+        for (let i = 0; i < weights.length; i++) {
+            r -= Math.max(0, weights[i]);
+            if (r <= 0) return i;
+        }
+        return weights.length - 1;
+    }
+
+    function pickWithPity(decisionsArr, pityCountsForScope, pityCfg) {
+        const softInc = Number(pityCfg.softIncrement) || 1;
+        const hardTh = Number(pityCfg.hardThreshold) || 12;
+        const cap = Number(pityCfg.softMultiplierCap) || 5;
+        let hardCandidateIndex = -1;
+        let highestPity = -1;
+        const weights = [];
+        for (let i = 0; i < decisionsArr.length; i++) {
+            const key = decisionKeyFromText(decisionsArr[i]);
+            const pity = Number((pityCountsForScope && pityCountsForScope[key]) || 0);
+            if (pity >= hardTh) {
+                if (pity > highestPity) { highestPity = pity; hardCandidateIndex = i; }
+            }
+            const base = 1;
+            const rawWeight = base + softInc * pity;
+            const maxWeight = base * cap;
+            const weight = Math.min(rawWeight, maxWeight);
+            weights.push(weight);
+        }
+        if (hardCandidateIndex >= 0) return { chosenIndex: hardCandidateIndex, method: "hard-pity" };
+        const idx = weightedRandomIndex(weights);
+        return { chosenIndex: idx, method: "soft-weight" };
+    }
+
+    function applyPityUpdate(scopeKey, decisionsArr, chosenIndex, method) {
+        const keyScope = scopeKey || getScopeKey();
+        const allPity = { ...(pityAll || {}) };
+        const counts = allPity[keyScope] ? { ...allPity[keyScope] } : {};
+        const hardHitsAll = { ...(pityHardHitsAll || {}) };
+        const hardHitsSet = new Set(hardHitsAll[keyScope] || []);
+        for (let i = 0; i < decisionsArr.length; i++) {
+            const key = decisionKeyFromText(decisionsArr[i]);
+            if (i === chosenIndex) counts[key] = 0;
+            else counts[key] = (Number(counts[key]) || 0) + 1;
+        }
+        if (method === "hard-pity") {
+            const chosenKey = decisionKeyFromText(decisionsArr[chosenIndex]);
+            hardHitsSet.add(chosenKey);
+            hardHitsAll[keyScope] = Array.from(hardHitsSet);
+            setPityHardHitsAll(hardHitsAll);
+        }
+        allPity[keyScope] = counts;
+        setPityAll(allPity);
+        const cfg = pitySettings || DEFAULT_PITY_SETTINGS;
+        if (cfg.autoResetWhenAllHardHit) {
+            const needed = new Set(decisionsArr.map((d) => decisionKeyFromText(d)));
+            let allHit = true;
+            for (const nk of needed) if (!hardHitsSet.has(nk)) { allHit = false; break; }
+            if (allHit) {
+                const cleared = {};
+                for (const d of decisionsArr) cleared[decisionKeyFromText(d)] = 0;
+                allPity[keyScope] = cleared;
+                setPityAll(allPity);
+                hardHitsAll[keyScope] = [];
+                setPityHardHitsAll(hardHitsAll);
+            }
+        }
+    }
+
+    function resetPityForScope(scopeKey) {
+        const key = scopeKey || getScopeKey();
+        const all = { ...(pityAll || {}) };
+        const cleared = {};
+        for (const d of decisions) cleared[decisionKeyFromText(d)] = 0;
+        all[key] = cleared;
+        setPityAll(all);
+        const hardAll = { ...(pityHardHitsAll || {}) };
+        hardAll[key] = [];
+        setPityHardHitsAll(hardAll);
+    }
+
+    // --- decisions / presets / history ---
     function addDecision(e) {
         e?.preventDefault();
         const t = input.trim();
@@ -157,47 +279,30 @@ export default function DecisionMakerApp() {
         setDecisions((d) => d.filter((_, i) => i !== idx));
         setActiveIndex((old) => (old === idx ? -1 : old > idx ? old - 1 : old));
     }
-    function clearAll() {
-        setDecisions([]);
-        setActiveIndex(-1);
-    }
+    function clearAll() { setDecisions([]); setActiveIndex(-1); }
 
     function openSavePresetModal(editId = null) {
         if (editId) {
             const p = presets.find((x) => x.id === editId);
-            if (p) {
-                setPresetName(p.name);
-                setEditingPresetId(editId);
-            }
-        } else {
-            setPresetName("");
-            setEditingPresetId(null);
-        }
+            if (p) { setPresetName(p.name); setEditingPresetId(editId); }
+        } else { setPresetName(""); setEditingPresetId(null); }
         setShowPresetModal(true);
     }
-    function closePresetModal() {
-        setShowPresetModal(false);
-        setPresetName("");
-        setEditingPresetId(null);
-    }
+    function closePresetModal() { setShowPresetModal(false); setPresetName(""); setEditingPresetId(null); }
     function savePreset() {
         const snapshot = decisions.slice();
         const nameTrim = presetName.trim() || `Preset ${new Date().toLocaleString()}`;
         if (editingPresetId) {
             setPresets((ps) => {
                 const updated = ps.map((p) => (p.id === editingPresetId ? { ...p, name: nameTrim, decisions: snapshot } : p));
-                try {
-                    localStorage.setItem("presets_v1", JSON.stringify(updated));
-                } catch (err) { }
+                try { saveToStorage("presets_v1", updated); } catch (err) { }
                 return updated;
             });
         } else {
             const id = Date.now().toString();
             setPresets((ps) => {
                 const updated = [...ps, { id, name: nameTrim, decisions: snapshot }];
-                try {
-                    localStorage.setItem("presets_v1", JSON.stringify(updated));
-                } catch (err) { }
+                try { saveToStorage("presets_v1", updated); } catch (err) { }
                 return updated;
             });
         }
@@ -208,89 +313,65 @@ export default function DecisionMakerApp() {
         if (p && Array.isArray(p.decisions)) {
             setDecisions(p.decisions.slice());
             setActiveIndex(p.decisions.length > 0 ? 0 : -1);
+            setCurrentPresetId(id);
         }
     }
     function deletePreset(id) {
         setPresets((ps) => {
             const updated = ps.filter((p) => p.id !== id);
-            try {
-                localStorage.setItem("presets_v1", JSON.stringify(updated));
-            } catch (err) { }
+            try { saveToStorage("presets_v1", updated); } catch (err) { }
+            const pity = { ...(pityAll || {}) };
+            if (pity[id]) { delete pity[id]; setPityAll(pity); }
+            const hard = { ...(pityHardHitsAll || {}) };
+            if (hard[id]) { delete hard[id]; setPityHardHitsAll(hard); }
             return updated;
         });
+        if (currentPresetId === id) setCurrentPresetId(null);
     }
 
-    // --- history helpers ---
+    // history
     function addHistoryEntry(decisionText) {
         if (!decisionText) return;
         const entry = { id: Date.now().toString(), decision: decisionText, timestamp: new Date().toISOString() };
         setHistoryEntries((h) => [entry, ...h]);
     }
     function openHistoryModal() {
-        const h = readHistoryFromStorage();
-        setHistoryEntries(h);
+        const h = readHistory();
+        setHistoryEntries(h || []);
         setHistoryPage(1);
         setShowHistoryModal(true);
     }
-    function closeHistoryModal() {
-        setShowHistoryModal(false);
-    }
-    function clearHistory() {
-        setHistoryEntries([]);
-        try {
-            localStorage.removeItem("history_v1");
-        } catch (e) { }
-    }
-
+    function closeHistoryModal() { setShowHistoryModal(false); }
+    function clearHistory() { setHistoryEntries([]); try { localStorage.removeItem("history_v1"); } catch (e) { } }
     const historyTotalPages = Math.max(1, Math.ceil(historyEntries.length / HISTORY_PAGE_SIZE));
-    function historyPageSlice() {
-        const start = (historyPage - 1) * HISTORY_PAGE_SIZE;
-        return historyEntries.slice(start, start + HISTORY_PAGE_SIZE);
-    }
-    function goHistoryPrev() {
-        setHistoryPage((p) => Math.max(1, p - 1));
-    }
-    function goHistoryNext() {
-        setHistoryPage((p) => Math.min(historyTotalPages, p + 1));
-    }
+    function historyPageSlice() { const start = (historyPage - 1) * HISTORY_PAGE_SIZE; return historyEntries.slice(start, start + HISTORY_PAGE_SIZE); }
+    function goHistoryPrev() { setHistoryPage((p) => Math.max(1, p - 1)); }
+    function goHistoryNext() { setHistoryPage((p) => Math.min(historyTotalPages, p + 1)); }
 
-    // --- settings modal (local edit state & validation) ---
-    // We'll keep an independent edit copy while modal is open.
-    const [diceEdit, setDiceEdit] = useState([]);
-    const [diceEditErrors, setDiceEditErrors] = useState({}); // { idx: { num: 'msg', sec: 'msg' } }
-    const [settingsSaveError, setSettingsSaveError] = useState("");
-
-    function openSettingsModal() {
-        // copy current dice settings into editable array
+    // --- DICE modal helpers (split from previous combined) ---
+    function openDiceModal() {
         setDiceEdit(diceSettings.map((d) => ({ num: d.num, sec: d.sec })));
         setDiceEditErrors({});
         setSettingsSaveError("");
-        setShowSettingsModal(true);
+        setShowDiceModal(true);
     }
-    function closeSettingsModal() {
-        setShowSettingsModal(false);
+    function closeDiceModal() {
+        setShowDiceModal(false);
         setDiceEditErrors({});
-        setSettingsSaveError("");
     }
 
-    // validation function returns errors object
     function validateDiceArray(arr) {
         const errors = {};
-        // numbers must be integer 1..50, sec must be number 1..60
-        // numbers unique
         const seen = new Map();
         arr.forEach((it, idx) => {
             const rowErr = {};
-            // num validation
-            if (it.num === "" || it.num === null || it.num === undefined || Number.isNaN(Number(it.num))) {
-                rowErr.num = "Number required";
-            } else {
+            if (it.num === "" || it.num === null || it.num === undefined || Number.isNaN(Number(it.num))) rowErr.num = "Number required";
+            else {
                 const n = Number(it.num);
                 if (!Number.isInteger(n)) rowErr.num = "Must be integer";
-                else if (n < 1 || n > 50) rowErr = { ...rowErr, num: "Must be 1–50" };
+                else if (n < 1 || n > 50) rowErr.num = "Must be 1–50";
                 else {
                     if (seen.has(n)) {
-                        // mark duplicate on both entries
                         rowErr.num = "Duplicate number";
                         const otherIdx = seen.get(n);
                         errors[otherIdx] = errors[otherIdx] || {};
@@ -298,22 +379,13 @@ export default function DecisionMakerApp() {
                     } else seen.set(n, idx);
                 }
             }
-            // sec validation
-            if (it.sec === "" || it.sec === null || it.sec === undefined || Number.isNaN(Number(it.sec))) {
-                rowErr.sec = "Duration required";
-            } else {
+            if (it.sec === "" || it.sec === null || it.sec === undefined || Number.isNaN(Number(it.sec))) rowErr.sec = "Duration required";
+            else {
                 const s = Number(it.sec);
                 if (s <= 0 || s > 60) rowErr.sec = "Must be >0 and ≤60";
             }
             if (Object.keys(rowErr).length) errors[idx] = rowErr;
         });
-        // global constraint: at least 2 faces
-        if (arr.length < 2) {
-            setSettingsSaveError("Dice must have at least 2 faces.");
-        } else {
-            // reset only if no other global error
-            setSettingsSaveError("");
-        }
         return errors;
     }
 
@@ -324,90 +396,100 @@ export default function DecisionMakerApp() {
             else if (field === "sec") copy[idx].sec = value === "" ? "" : Number(value);
             return copy;
         });
-        // revalidate on change
         setTimeout(() => {
             const errs = validateDiceArray(
-                (idx === undefined ? diceEdit : // fallback in case state not updated yet
-                    // create the prospective array with this change applied
-                    (function () {
-                        const arr = diceEdit.map((r) => ({ ...r }));
-                        arr[idx] = { ...arr[idx], [field]: field === "num" ? (value === "" ? "" : Number(value)) : (value === "" ? "" : Number(value)) };
-                        return arr;
-                    })())
+                (function () {
+                    const arr = diceEdit.map((r) => ({ ...r }));
+                    arr[idx] = { ...arr[idx], [field]: field === "num" ? (value === "" ? "" : Number(value)) : (value === "" ? "" : Number(value)) };
+                    return arr;
+                })()
             );
             setDiceEditErrors(errs);
         }, 0);
     }
 
     function addDiceRow() {
-        // find smallest unused number from 1..50
         const used = new Set(diceEdit.map((d) => Number(d.num)).filter((n) => !Number.isNaN(n)));
         let next = 1;
         while (used.has(next) && next <= 50) next++;
-        if (next > 50) {
-            setSettingsSaveError("Cannot add more faces — all numbers 1..50 used.");
-            return;
-        }
+        if (next > 50) { setSettingsSaveError("Cannot add more faces — all numbers 1..50 used."); return; }
         const newRow = { num: next, sec: 3 };
         setDiceEdit((p) => [...p, newRow]);
-        setTimeout(() => {
-            const errs = validateDiceArray([...diceEdit, newRow]);
-            setDiceEditErrors(errs);
-        }, 0);
+        setTimeout(() => { const errs = validateDiceArray([...diceEdit, newRow]); setDiceEditErrors(errs); }, 0);
     }
+    function deleteDiceRow(idx) { if (diceEdit.length <= 2) return; setDiceEdit((p) => p.filter((_, i) => i !== idx)); setTimeout(() => { const arr = diceEdit.filter((_, i) => i !== idx); const errs = validateDiceArray(arr); setDiceEditErrors(errs); }, 0); }
+    function resetDiceToDefaults() { setDiceEdit(DEFAULT_DICE.map((d) => ({ num: d.num, sec: d.sec }))); setDiceEditErrors({}); setSettingsSaveError(""); }
 
-    function deleteDiceRow(idx) {
-        if (diceEdit.length <= 2) return; // guarded UI will prevent, but double-check
-        setDiceEdit((p) => p.filter((_, i) => i !== idx));
-        setTimeout(() => {
-            const arr = diceEdit.filter((_, i) => i !== idx);
-            const errs = validateDiceArray(arr);
-            setDiceEditErrors(errs);
-        }, 0);
-    }
-
-    function resetDiceToDefaults() {
-        setDiceEdit(DEFAULT_DICE.map((d) => ({ num: d.num, sec: d.sec })));
-        setDiceEditErrors({});
-        setSettingsSaveError("");
-    }
-
-    function saveSettingsFromModal() {
-        // validate
-        const errs = validateDiceArray(diceEdit);
-        setDiceEditErrors(errs);
-        if (Object.keys(errs).length > 0 || diceEdit.length < 2) {
-            setSettingsSaveError("Fix validation errors before saving.");
-            return;
-        }
-        // normalize: sort by dice number ascending (optional)
-        const normalized = diceEdit
-            .map((r) => ({ num: Number(r.num), sec: Number(r.sec) }))
-            .sort((a, b) => a.num - b.num);
+    function saveDiceSettings() {
+        const diceErrs = validateDiceArray(diceEdit);
+        setDiceEditErrors(diceErrs);
+        if (Object.keys(diceErrs).length > 0) { setSettingsSaveError("Fix dice validation errors before saving."); return; }
+        const normalized = diceEdit.map((r) => ({ num: Number(r.num), sec: Number(r.sec) })).sort((a, b) => a.num - b.num);
         setDiceSettings(normalized);
-        try {
-            localStorage.setItem(DICE_STORAGE_KEY, JSON.stringify(normalized));
-        } catch (e) { }
-        setShowSettingsModal(false);
+        setShowDiceModal(false);
     }
 
-    // --- spin logic (dice-driven) ---
+    // --- PITY modal helpers (split) ---
+    function openPityModal() {
+        setPityEdit({ ...pitySettings });
+        setPityScopeChoice("global");
+        setSettingsSaveError("");
+        setShowPityModal(true);
+    }
+    function closePityModal() { setShowPityModal(false); setSettingsSaveError(""); }
+
+    function onPityEditChange(field, value) { setPityEdit((p) => ({ ...p, [field]: value })); }
+
+    function savePitySettings() {
+        const sInc = Number(pityEdit.softIncrement);
+        const hardTh = Number(pityEdit.hardThreshold);
+        const cap = Number(pityEdit.softMultiplierCap);
+        if (!Number.isInteger(sInc) || sInc <= 0) { setSettingsSaveError("softIncrement must be integer > 0"); return; }
+        if (!Number.isInteger(hardTh) || hardTh < 1) { setSettingsSaveError("hardThreshold must be integer ≥ 1"); return; }
+        if (!Number.isInteger(cap) || cap < 1) { setSettingsSaveError("cap must be integer ≥ 1"); return; }
+        const cfg = {
+            enabled: Boolean(pityEdit.enabled),
+            softIncrement: sInc,
+            hardThreshold: hardTh,
+            softMultiplierCap: cap,
+            autoResetWhenAllHardHit: Boolean(pityEdit.autoResetWhenAllHardHit),
+        };
+        if (!cfg.enabled) {
+            // clear visible counters (global scope) — adjust per your desired scope behavior
+            setPityAll({});
+            setPityHardHitsAll({});
+        }
+        setPitySettings(cfg);
+        setShowPityModal(false);
+    }
+
+    function resetPityGlobal() {
+        const all = { ...(pityAll || {}) };
+        all["global"] = {};
+        for (const d of decisions) all["global"][decisionKeyFromText(d)] = 0;
+        setPityAll(all);
+        const hard = { ...(pityHardHitsAll || {}) };
+        hard["global"] = [];
+        setPityHardHitsAll(hard);
+    }
+    function resetPityCurrentPreset() {
+        if (!currentPresetId) { setSettingsSaveError("No preset currently applied (cannot reset per-preset)."); return; }
+        resetPityForScope(currentPresetId);
+    }
+
+    // --- spin logic (dice-driven + pity) ---
     function stopSpin() {
         const wasRunning = spinRunningRef.current;
-        if (spinTimeoutRef.current) {
-            clearTimeout(spinTimeoutRef.current);
-            spinTimeoutRef.current = null;
-        }
-        if (progressIntervalRef.current) {
-            clearInterval(progressIntervalRef.current);
-            progressIntervalRef.current = null;
-        }
+        if (spinTimeoutRef.current) { clearTimeout(spinTimeoutRef.current); spinTimeoutRef.current = null; }
+        if (progressIntervalRef.current) { clearInterval(progressIntervalRef.current); progressIntervalRef.current = null; }
         spinRunningRef.current = false;
         setIsRunning(false);
         if (wasRunning && activeIndex >= 0 && decisions[activeIndex]) {
             try {
                 addHistoryEntry(decisions[activeIndex]);
-            } catch (err) { }
+                const scope = getScopeKey();
+                applyPityUpdate(scope, decisions, activeIndex, "manual-stop");
+            } catch (err) { console.warn(err); }
         }
         setProgress(0);
     }
@@ -416,46 +498,41 @@ export default function DecisionMakerApp() {
         if (isRunning) return;
         if (decisions.length === 0) return;
 
-        // pick a random face from current diceSettings
-        const faces = Array.isArray(diceSettings) && diceSettings.length > 0 ? diceSettings : DEFAULT_DICE;
-        const idx = Math.floor(Math.random() * faces.length);
-        const face = faces[idx];
+        // pick a dice face for duration
+        const roll = Math.floor(Math.random() * diceSettings.length);
+        const face = diceSettings[roll];
         const rollNumber = face.num;
         const chosenSec = face.sec;
-
         setDiceRoll(rollNumber);
         setDiceDurationSec(chosenSec);
-
         const desiredMs = Math.max(300, Math.round(chosenSec * 1000));
+
+        // pick final using pity
+        const scope = getScopeKey();
+        const pityCountsForScope = (pityAll && pityAll[scope]) ? { ...pityAll[scope] } : {};
+        const cfg = pitySettings || DEFAULT_PITY_SETTINGS;
+        const pickResult = cfg.enabled ? pickWithPity(decisions, pityCountsForScope, cfg) : { chosenIndex: Math.floor(Math.random() * decisions.length), method: "none" };
+        const finalChosenIndex = pickResult.chosenIndex;
+        const pickMethod = pickResult.method;
 
         spinRunningRef.current = true;
         setIsRunning(true);
         setProgress(0);
         startTimeRef.current = Date.now();
 
-        // progress updater
-        if (progressIntervalRef.current) {
-            clearInterval(progressIntervalRef.current);
-            progressIntervalRef.current = null;
-        }
+        if (progressIntervalRef.current) { clearInterval(progressIntervalRef.current); progressIntervalRef.current = null; }
         progressIntervalRef.current = setInterval(() => {
             const elapsed = Date.now() - startTimeRef.current;
             const pct = Math.min(100, Math.round((elapsed / desiredMs) * 100));
             setProgress(pct);
-            if (elapsed >= desiredMs) {
-                clearInterval(progressIntervalRef.current);
-                progressIntervalRef.current = null;
-            }
+            if (elapsed >= desiredMs) { clearInterval(progressIntervalRef.current); progressIntervalRef.current = null; }
         }, 40);
 
-        // spin animation ticks
         const baseDelay = 30;
         const estimatedFactor = 11;
         const totalTicks = Math.max(10, Math.round(desiredMs / (baseDelay * estimatedFactor)));
-
         const startFrom = activeIndex >= 0 && activeIndex < decisions.length ? activeIndex : 0;
         setActiveIndex(startFrom);
-
         let tick = 0;
 
         function step() {
@@ -466,27 +543,18 @@ export default function DecisionMakerApp() {
             spinTimeoutRef.current = setTimeout(() => {
                 setActiveIndex((old) => (old + 1) % decisions.length);
                 tick += 1;
-
                 const elapsed = Date.now() - startTimeRef.current;
 
                 if (tick <= totalTicks && spinRunningRef.current && elapsed < desiredMs) {
                     step();
                 } else {
                     if (spinRunningRef.current) {
-                        const final = Math.floor(Math.random() * decisions.length);
-                        setActiveIndex(final);
-                        try {
-                            addHistoryEntry(decisions[final]);
-                        } catch (err) { }
+                        setActiveIndex(finalChosenIndex);
+                        try { addHistoryEntry(decisions[finalChosenIndex]); } catch (err) { console.warn(err); }
+                        try { applyPityUpdate(scope, decisions, finalChosenIndex, pickMethod); } catch (err) { console.warn(err); }
                     }
-                    if (spinTimeoutRef.current) {
-                        clearTimeout(spinTimeoutRef.current);
-                        spinTimeoutRef.current = null;
-                    }
-                    if (progressIntervalRef.current) {
-                        clearInterval(progressIntervalRef.current);
-                        progressIntervalRef.current = null;
-                    }
+                    if (spinTimeoutRef.current) { clearTimeout(spinTimeoutRef.current); spinTimeoutRef.current = null; }
+                    if (progressIntervalRef.current) { clearInterval(progressIntervalRef.current); progressIntervalRef.current = null; }
                     spinRunningRef.current = false;
                     setIsRunning(false);
                     setProgress(100);
@@ -497,9 +565,7 @@ export default function DecisionMakerApp() {
         step();
     }
 
-    function restartFromStart() {
-        setActiveIndex(decisions.length > 0 ? 0 : -1);
-    }
+    function restartFromStart() { setActiveIndex(decisions.length > 0 ? 0 : -1); }
 
 
     // --- render (keeps your exact layout) ---
@@ -593,8 +659,13 @@ export default function DecisionMakerApp() {
                                             History
                                         </Button>
 
-                                        <Button variant="outline-secondary" onClick={openSettingsModal} className="ms-1">
+
+                                        <Button variant="outline-secondary" onClick={openDiceModal} className="ms-1">
                                             Settings
+                                        </Button>
+
+                                        <Button variant="outline-warning" onClick={openPityModal} className="ms-1">
+                                            Pity
                                         </Button>
                                     </div>
                                 </div>
@@ -606,36 +677,28 @@ export default function DecisionMakerApp() {
                                             <div className="text-center text-muted py-3">No decisions yet — add one above.</div>
                                         ) : (
                                             <ListGroup>
-                                                {decisions.map((d, i) => (
-                                                    <ListGroup.Item
-                                                        key={i}
-                                                        className="d-flex justify-content-between align-items-center"
-                                                        active={i === activeIndex}
-                                                    >
-                                                        <div className="d-flex align-items-center gap-2">
-                                                            <div style={{ minWidth: 8, minHeight: 8 }}>
-                                                                {/* small bullet (optional) */}
+                                                {decisions.map((d, i) => {
+                                                    const pk = decisionKeyFromText(d);
+                                                    const scope = getScopeKey();
+                                                    const countsForScope = (pityAll && pityAll[scope]) ? pityAll[scope] : {};
+                                                    const pityCount = Number(countsForScope[pk] || 0);
+                                                    return (
+                                                        <ListGroup.Item key={i} className="d-flex justify-content-between align-items-center" active={i === activeIndex}>
+                                                            <div className="d-flex align-items-center gap-2" style={{ wordBreak: "break-word" }}>
+                                                                <div style={{ minWidth: 8, minHeight: 8 }} />
+                                                                <div>{d}</div>
                                                             </div>
-                                                            <div>{d}</div>
-                                                        </div>
 
-                                                        <div className="d-flex align-items-center gap-2">
-                                                            {i === activeIndex && !isRunning && (
-                                                                <Badge bg="warning" text="dark">
-                                                                    Selected
-                                                                </Badge>
-                                                            )}
-                                                            <Button
-                                                                size="sm"
-                                                                variant="outline-danger"
-                                                                onClick={() => removeDecision(i)}
-                                                                disabled={isRunning}
-                                                            >
-                                                                Remove
-                                                            </Button>
-                                                        </div>
-                                                    </ListGroup.Item>
-                                                ))}
+                                                            <div className="d-flex align-items-center gap-2">
+                                                                {pitySettings && pitySettings.enabled && (
+                                                                    <div className="small text-muted">pity: <strong>{pityCount}</strong></div>
+                                                                )}
+                                                                {i === activeIndex && !isRunning && <Badge bg="warning" text="dark" className="ms-1">Selected</Badge>}
+                                                                <Button size="sm" variant="outline-danger" onClick={() => removeDecision(i)} disabled={isRunning}>Remove</Button>
+                                                            </div>
+                                                        </ListGroup.Item>
+                                                    );
+                                                })}
                                             </ListGroup>
                                         )}
                                     </Col>
@@ -655,7 +718,7 @@ export default function DecisionMakerApp() {
             </main>
 
             {/* Presets Modal */}
-            <Modal show={showPresetModal} onHide={closePresetModal} size="lg">
+            <Modal show={showPresetModal} onHide={closePresetModal} size="lg" scrollable>
                 <Modal.Header closeButton>
                     <Modal.Title>Presets</Modal.Title>
                 </Modal.Header>
@@ -744,19 +807,15 @@ export default function DecisionMakerApp() {
                 </Modal.Footer>
             </Modal>
 
-            {/* Settings Modal */}
-            <Modal show={showSettingsModal} onHide={closeSettingsModal} size="lg">
-                <Modal.Header closeButton>
-                    <Modal.Title>Dice Settings</Modal.Title>
-                </Modal.Header>
+            {/* Dice Settings Modal */}
+            <Modal show={showDiceModal} onHide={closeDiceModal} size="lg" scrollable>
+                <Modal.Header closeButton><Modal.Title>Dice Settings</Modal.Title></Modal.Header>
                 <Modal.Body>
-                    <p className="small text-muted">Edit dice faces and their durations. Dice numbers must be unique (1–50). Durations 1–60 seconds. Minimum 2 faces.</p>
+                    <h6>Dice Faces</h6>
+                    <p className="small text-muted">Edit dice faces and durations. Dice numbers must be unique (1–50). Durations 1–60 seconds. Minimum 2 faces.</p>
 
-                    {/* table-like list */}
                     <div className="mb-2">
-                        {diceEdit.length === 0 ? (
-                            <div className="text-muted">No faces — add one.</div>
-                        ) : (
+                        {diceEdit.length === 0 ? <div className="text-muted">No faces — add one.</div> : (
                             <ListGroup>
                                 {diceEdit.map((row, idx) => {
                                     const rowErr = diceEditErrors[idx] || {};
@@ -765,41 +824,21 @@ export default function DecisionMakerApp() {
                                             <div style={{ width: 90 }}>
                                                 <Form.Group controlId={`dice-num-${idx}`}>
                                                     <Form.Label className="small mb-1">Dice number</Form.Label>
-                                                    <Form.Control
-                                                        type="number"
-                                                        value={row.num}
-                                                        min={1}
-                                                        max={50}
-                                                        isInvalid={!!rowErr.num}
-                                                        onChange={(e) => onDiceEditChange(idx, "num", e.target.value === "" ? "" : Number(e.target.value))}
-                                                    />
-                                                    <div className="invalid-feedback" style={{ display: rowErr.num ? "block" : "none" }}>
-                                                        {rowErr.num}
-                                                    </div>
+                                                    <Form.Control type="number" value={row.num} min={1} max={50} isInvalid={!!rowErr.num}
+                                                        onChange={(e) => onDiceEditChange(idx, "num", e.target.value === "" ? "" : Number(e.target.value))} />
+                                                    <div className="invalid-feedback" style={{ display: rowErr.num ? "block" : "none" }}>{rowErr.num}</div>
                                                 </Form.Group>
                                             </div>
-
                                             <div style={{ width: 140 }}>
                                                 <Form.Group controlId={`dice-sec-${idx}`}>
                                                     <Form.Label className="small mb-1">Duration (s)</Form.Label>
-                                                    <Form.Control
-                                                        type="number"
-                                                        value={row.sec}
-                                                        min={1}
-                                                        max={60}
-                                                        isInvalid={!!rowErr.sec}
-                                                        onChange={(e) => onDiceEditChange(idx, "sec", e.target.value === "" ? "" : Number(e.target.value))}
-                                                    />
-                                                    <div className="invalid-feedback" style={{ display: rowErr.sec ? "block" : "none" }}>
-                                                        {rowErr.sec}
-                                                    </div>
+                                                    <Form.Control type="number" value={row.sec} min={1} max={60} isInvalid={!!rowErr.sec}
+                                                        onChange={(e) => onDiceEditChange(idx, "sec", e.target.value === "" ? "" : Number(e.target.value))} />
+                                                    <div className="invalid-feedback" style={{ display: rowErr.sec ? "block" : "none" }}>{rowErr.sec}</div>
                                                 </Form.Group>
                                             </div>
-
                                             <div className="ms-auto d-flex gap-2">
-                                                <Button size="sm" variant="outline-danger" onClick={() => deleteDiceRow(idx)} disabled={diceEdit.length <= 2}>
-                                                    Delete
-                                                </Button>
+                                                <Button size="sm" variant="outline-danger" onClick={() => deleteDiceRow(idx)} disabled={diceEdit.length <= 2}>Delete</Button>
                                             </div>
                                         </ListGroup.Item>
                                     );
@@ -808,7 +847,7 @@ export default function DecisionMakerApp() {
                         )}
                     </div>
 
-                    <div className="d-flex gap-2">
+                    <div className="d-flex gap-2 mb-3">
                         <Button onClick={addDiceRow}>Add Face</Button>
                         <Button variant="outline-secondary" onClick={resetDiceToDefaults}>Reset to Defaults</Button>
                     </div>
@@ -816,8 +855,85 @@ export default function DecisionMakerApp() {
                     {settingsSaveError && <div className="mt-3 text-danger small">{settingsSaveError}</div>}
                 </Modal.Body>
                 <Modal.Footer>
-                    <Button variant="secondary" onClick={closeSettingsModal}>Cancel</Button>
-                    <Button variant="primary" onClick={saveSettingsFromModal}>Save Settings</Button>
+                    <Button variant="secondary" onClick={closeDiceModal}>Cancel</Button>
+                    <Button variant="primary" onClick={saveDiceSettings}>Save Dice</Button>
+                </Modal.Footer>
+            </Modal>
+
+            {/* Pity Modal */}
+            <Modal show={showPityModal} onHide={closePityModal} size="lg" scrollable>
+                <Modal.Header closeButton><Modal.Title>Pity Settings & Counters</Modal.Title></Modal.Header>
+                <Modal.Body>
+                    <h6>Pity Settings</h6>
+                    <p className="small text-muted">Hybrid pity: soft-weight + hard guarantee. Toggle pity on/off, tune parameters, and reset counters.</p>
+
+                    <Form>
+                        <Form.Check type="switch" id="toggle-pity" label={`Pity enabled: ${pityEdit.enabled ? "ON" : "OFF"}`}
+                            checked={!!pityEdit.enabled} onChange={(e) => onPityEditChange("enabled", e.target.checked)} />
+
+                        <div className="d-flex gap-3 mt-2 align-items-center">
+                            <Form.Group controlId="softIncrement">
+                                <Form.Label className="small mb-1">softIncrement</Form.Label>
+                                <Form.Control type="number" value={pityEdit.softIncrement} min={1} onChange={(e) => onPityEditChange("softIncrement", Number(e.target.value))} />
+                                <div className="small text-muted">Amount to add to weight per miss.</div>
+                            </Form.Group>
+
+                            <Form.Group controlId="hardThreshold">
+                                <Form.Label className="small mb-1">hardThreshold</Form.Label>
+                                <Form.Control type="number" value={pityEdit.hardThreshold} min={1} onChange={(e) => onPityEditChange("hardThreshold", Number(e.target.value))} />
+                                <div className="small text-muted">Guarantee after this many misses.</div>
+                            </Form.Group>
+
+                            <Form.Group controlId="cap">
+                                <Form.Label className="small mb-1">softMultiplierCap</Form.Label>
+                                <Form.Control type="number" value={pityEdit.softMultiplierCap} min={1} onChange={(e) => onPityEditChange("softMultiplierCap", Number(e.target.value))} />
+                                <div className="small text-muted">Max multiplier for soft-pity.</div>
+                            </Form.Group>
+                        </div>
+
+                        <Form.Check type="checkbox" id="autoReset" className="mt-2"
+                            label="Auto-reset pity when every face has been hit by a hard-pity"
+                            checked={!!pityEdit.autoResetWhenAllHardHit} onChange={(e) => onPityEditChange("autoResetWhenAllHardHit", e.target.checked)} />
+
+                        <hr />
+
+                        <h6>Pity Counters (scope)</h6>
+                        <div className="d-flex gap-2 align-items-center mb-2">
+                            <Form.Check type="radio" id="scope-global" label="Global" checked={pityScopeChoice === "global"} onChange={() => setPityScopeChoice("global")} />
+                            <Form.Check type="radio" id="scope-preset" label={`Current preset (${currentPresetId ? currentPresetId : "none"})`} checked={pityScopeChoice === "preset"} onChange={() => setPityScopeChoice("preset")} disabled={!currentPresetId} />
+                        </div>
+
+                        <div className="small text-muted mb-2">Showing pity counters for: <strong>{pityScopeChoice === "global" ? "global" : currentPresetId}</strong></div>
+
+                        <div style={{ maxHeight: 200, overflow: "auto" }}>
+                            <ListGroup>
+                                {decisions.length === 0 ? <ListGroup.Item className="text-muted">No decisions</ListGroup.Item> :
+                                    decisions.map((d, idx) => {
+                                        const key = decisionKeyFromText(d);
+                                        const scopeKey = pityScopeChoice === "global" ? "global" : (currentPresetId || "global");
+                                        const map = (pityAll && pityAll[scopeKey]) ? pityAll[scopeKey] : {};
+                                        const val = Number(map[key] || 0);
+                                        return (
+                                            <ListGroup.Item key={idx} className="d-flex justify-content-between align-items-center">
+                                                <div style={{ wordBreak: "break-word" }}>{d}</div>
+                                                <div className="small text-muted">pity: <strong>{val}</strong></div>
+                                            </ListGroup.Item>
+                                        );
+                                    })}
+                            </ListGroup>
+                        </div>
+
+                        <div className="d-flex gap-2 mt-3">
+                            <Button variant="outline-danger" onClick={() => { if (pityScopeChoice === "global") resetPityGlobal(); else resetPityCurrentPreset(); }}>Reset Pity Counters (scope)</Button>
+                            <Button variant="outline-secondary" onClick={() => { setPityAll({}); setPityHardHitsAll({}); }}>Reset All Pity</Button>
+                        </div>
+                    </Form>
+
+                    {settingsSaveError && <div className="mt-3 text-danger small">{settingsSaveError}</div>}
+                </Modal.Body>
+                <Modal.Footer>
+                    <Button variant="secondary" onClick={closePityModal}>Cancel</Button>
+                    <Button variant="primary" onClick={savePitySettings}>Save Pity</Button>
                 </Modal.Footer>
             </Modal>
 
