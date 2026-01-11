@@ -330,11 +330,25 @@ export default function DecisionMakerApp() {
     }
 
     // history
-    function addHistoryEntry(decisionText) {
-        if (!decisionText) return;
-        const entry = { id: Date.now().toString(), decision: decisionText, timestamp: new Date().toISOString() };
-        setHistoryEntries((h) => [entry, ...h]);
+    function addHistoryEntry(entry) {
+        let newEntry;
+        if (typeof entry === "string") {
+            newEntry = { id: Date.now().toString(), decision: entry, timestamp: new Date().toISOString() };
+        } else if (entry && typeof entry === "object" && entry.decision) {
+            newEntry = {
+                id: Date.now().toString(),
+                decision: entry.decision,
+                timestamp: new Date().toISOString(),
+                dice: entry.dice ?? null,
+                duration: entry.duration ?? null,
+                method: entry.method ?? null,
+            };
+        } else {
+            return;
+        }
+        setHistoryEntries((h) => [newEntry, ...h]);
     }
+
     function openHistoryModal() {
         const h = readHistory();
         setHistoryEntries(h || []);
@@ -486,7 +500,13 @@ export default function DecisionMakerApp() {
         setIsRunning(false);
         if (wasRunning && activeIndex >= 0 && decisions[activeIndex]) {
             try {
-                addHistoryEntry(decisions[activeIndex]);
+                // include dice & duration & method in history
+                addHistoryEntry({
+                    decision: decisions[activeIndex],
+                    dice: diceRoll ?? null,
+                    duration: diceDurationSec ?? null,
+                    method: "manual-stop",
+                });
                 const scope = getScopeKey();
                 applyPityUpdate(scope, decisions, activeIndex, "manual-stop");
             } catch (err) { console.warn(err); }
@@ -550,7 +570,16 @@ export default function DecisionMakerApp() {
                 } else {
                     if (spinRunningRef.current) {
                         setActiveIndex(finalChosenIndex);
-                        try { addHistoryEntry(decisions[finalChosenIndex]); } catch (err) { console.warn(err); }
+                        try {
+                            // record history with dice info and method (soft-weight/hard-pity/none)
+                            addHistoryEntry({
+                                decision: decisions[finalChosenIndex],
+                                dice: rollNumber,
+                                duration: chosenSec,
+                                method: pickMethod,
+                            });
+                        } catch (err) { console.warn(err); }
+
                         try { applyPityUpdate(scope, decisions, finalChosenIndex, pickMethod); } catch (err) { console.warn(err); }
                     }
                     if (spinTimeoutRef.current) { clearTimeout(spinTimeoutRef.current); spinTimeoutRef.current = null; }
@@ -769,42 +798,45 @@ export default function DecisionMakerApp() {
 
             {/* History Modal */}
             <Modal show={showHistoryModal} onHide={closeHistoryModal} size="lg">
-                <Modal.Header closeButton>
-                    <Modal.Title>Decision History</Modal.Title>
-                </Modal.Header>
+                <Modal.Header closeButton><Modal.Title>Decision History</Modal.Title></Modal.Header>
                 <Modal.Body>
                     <div className="d-flex justify-content-between align-items-center mb-3">
                         <div className="small text-muted">Showing {historyEntries.length} entries</div>
                         <div className="d-flex gap-2">
-                            <Button size="sm" variant="outline-secondary" onClick={goHistoryPrev} disabled={historyPage <= 1}>
-                                Prev
-                            </Button>
+                            <Button size="sm" variant="outline-secondary" onClick={goHistoryPrev} disabled={historyPage <= 1}>Prev</Button>
                             <div className="small align-self-center">Page {historyPage} / {historyTotalPages}</div>
-                            <Button size="sm" variant="outline-secondary" onClick={goHistoryNext} disabled={historyPage >= historyTotalPages}>
-                                Next
-                            </Button>
+                            <Button size="sm" variant="outline-secondary" onClick={goHistoryNext} disabled={historyPage >= historyTotalPages}>Next</Button>
                             <Button size="sm" variant="outline-danger" onClick={clearHistory} className="ms-2">Clear</Button>
                         </div>
                     </div>
 
-                    {historyEntries.length === 0 ? (
-                        <div className="text-muted">No history yet.</div>
-                    ) : (
+                    {historyEntries.length === 0 ? <div className="text-muted">No history yet.</div> : (
                         <ListGroup>
                             {historyPageSlice().map((h) => (
-                                <ListGroup.Item key={h.id} className="d-flex justify-content-between align-items-center">
-                                    <div>
-                                        <div style={{ wordBreak: 'break-word' }}>{h.decision}</div>
+                                <ListGroup.Item key={h.id} className="d-flex flex-column gap-2">
+                                    <div className="d-flex justify-content-between">
+                                        <div style={{ wordBreak: "break-word", fontWeight: 500 }}>{h.decision}</div>
                                         <div className="small text-muted">{new Date(h.timestamp).toLocaleString()}</div>
+                                    </div>
+
+                                    {/* Show dice + duration + method if present */}
+                                    <div className="d-flex gap-3 align-items-center">
+                                        {h.dice != null ? (
+                                            <div className="small text-muted">Dice: <Badge bg="info">{h.dice}</Badge></div>
+                                        ) : null}
+                                        {h.duration != null ? (
+                                            <div className="small text-muted">Duration: <strong>{h.duration}s</strong></div>
+                                        ) : null}
+                                        {h.method ? (
+                                            <div className="small text-muted">Method: <em>{h.method}</em></div>
+                                        ) : null}
                                     </div>
                                 </ListGroup.Item>
                             ))}
                         </ListGroup>
                     )}
                 </Modal.Body>
-                <Modal.Footer>
-                    <Button variant="secondary" onClick={closeHistoryModal}>Close</Button>
-                </Modal.Footer>
+                <Modal.Footer><Button variant="secondary" onClick={closeHistoryModal}>Close</Button></Modal.Footer>
             </Modal>
 
             {/* Dice Settings Modal */}
