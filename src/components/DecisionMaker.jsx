@@ -500,7 +500,6 @@ export default function DecisionMakerApp() {
         setIsRunning(false);
         if (wasRunning && activeIndex >= 0 && decisions[activeIndex]) {
             try {
-                // include dice & duration & method in history
                 addHistoryEntry({
                     decision: decisions[activeIndex],
                     dice: diceRoll ?? null,
@@ -508,7 +507,10 @@ export default function DecisionMakerApp() {
                     method: "manual-stop",
                 });
                 const scope = getScopeKey();
-                applyPityUpdate(scope, decisions, activeIndex, "manual-stop");
+                // Only update pity if it's enabled in saved settings
+                if (pitySettings && pitySettings.enabled) {
+                    applyPityUpdate(scope, decisions, activeIndex, "manual-stop");
+                }
             } catch (err) { console.warn(err); }
         }
         setProgress(0);
@@ -580,7 +582,15 @@ export default function DecisionMakerApp() {
                             });
                         } catch (err) { console.warn(err); }
 
-                        try { applyPityUpdate(scope, decisions, finalChosenIndex, pickMethod); } catch (err) { console.warn(err); }
+                        if (cfg && cfg.enabled) {
+                            try {
+                                applyPityUpdate(scope, decisions, finalChosenIndex, pickMethod);
+                            } catch (err) {
+                                console.warn(err);
+                            }
+                        } else {
+                            // Pity disabled: do not mutate counters
+                        }
                     }
                     if (spinTimeoutRef.current) { clearTimeout(spinTimeoutRef.current); spinTimeoutRef.current = null; }
                     if (progressIntervalRef.current) { clearInterval(progressIntervalRef.current); progressIntervalRef.current = null; }
