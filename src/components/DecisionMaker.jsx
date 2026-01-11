@@ -13,6 +13,8 @@ import {
     Badge,
     Modal,
     ProgressBar,
+    Tabs,
+    Tab,
 } from "react-bootstrap";
 
 const GITHUB_URL = "https://github.com/andyrhman";
@@ -103,17 +105,17 @@ export default function DecisionMakerApp() {
     const [historyPage, setHistoryPage] = useState(1);
     const HISTORY_PAGE_SIZE = 10;
 
-    // dice settings (dice modal)
+    // dice & settings modal (combined)
     const [diceSettings, setDiceSettings] = useState(() => readDice());
-    const [showDiceModal, setShowDiceModal] = useState(false);
-    const [diceEdit, setDiceEdit] = useState([]);
-    const [diceEditErrors, setDiceEditErrors] = useState({});
-
-    // pity (separate modal)
     const [pityAll, setPityAll] = useState(() => readPityAll());
     const [pityHardHitsAll, setPityHardHitsAll] = useState(() => readPityHardHitsAll());
     const [pitySettings, setPitySettings] = useState(() => readPitySettings());
-    const [showPityModal, setShowPityModal] = useState(false);
+
+    // modal local edits
+    const [showSettingsModal, setShowSettingsModal] = useState(false);
+    const [activeSettingsTab, setActiveSettingsTab] = useState("dice"); // 'dice' | 'pity'
+    const [diceEdit, setDiceEdit] = useState([]);
+    const [diceEditErrors, setDiceEditErrors] = useState({});
     const [pityEdit, setPityEdit] = useState({ ...readPitySettings() });
     const [pityScopeChoice, setPityScopeChoice] = useState("global");
     const [settingsSaveError, setSettingsSaveError] = useState("");
@@ -362,16 +364,20 @@ export default function DecisionMakerApp() {
     function goHistoryPrev() { setHistoryPage((p) => Math.max(1, p - 1)); }
     function goHistoryNext() { setHistoryPage((p) => Math.min(historyTotalPages, p + 1)); }
 
-    // --- DICE modal helpers (split from previous combined) ---
-    function openDiceModal() {
+    function openSettingsModal(tab = "dice") {
+        // prepare dice edit & pity edit snapshots
         setDiceEdit(diceSettings.map((d) => ({ num: d.num, sec: d.sec })));
         setDiceEditErrors({});
+        setPityEdit({ ...pitySettings });
+        setPityScopeChoice("global");
         setSettingsSaveError("");
-        setShowDiceModal(true);
+        setActiveSettingsTab(tab === "pity" ? "pity" : "dice");
+        setShowSettingsModal(true);
     }
-    function closeDiceModal() {
-        setShowDiceModal(false);
+    function closeSettingsModal() {
+        setShowSettingsModal(false);
         setDiceEditErrors({});
+        setSettingsSaveError("");
     }
 
     function validateDiceArray(arr) {
@@ -434,48 +440,7 @@ export default function DecisionMakerApp() {
     function deleteDiceRow(idx) { if (diceEdit.length <= 2) return; setDiceEdit((p) => p.filter((_, i) => i !== idx)); setTimeout(() => { const arr = diceEdit.filter((_, i) => i !== idx); const errs = validateDiceArray(arr); setDiceEditErrors(errs); }, 0); }
     function resetDiceToDefaults() { setDiceEdit(DEFAULT_DICE.map((d) => ({ num: d.num, sec: d.sec }))); setDiceEditErrors({}); setSettingsSaveError(""); }
 
-    function saveDiceSettings() {
-        const diceErrs = validateDiceArray(diceEdit);
-        setDiceEditErrors(diceErrs);
-        if (Object.keys(diceErrs).length > 0) { setSettingsSaveError("Fix dice validation errors before saving."); return; }
-        const normalized = diceEdit.map((r) => ({ num: Number(r.num), sec: Number(r.sec) })).sort((a, b) => a.num - b.num);
-        setDiceSettings(normalized);
-        setShowDiceModal(false);
-    }
-
-    // --- PITY modal helpers (split) ---
-    function openPityModal() {
-        setPityEdit({ ...pitySettings });
-        setPityScopeChoice("global");
-        setSettingsSaveError("");
-        setShowPityModal(true);
-    }
-    function closePityModal() { setShowPityModal(false); setSettingsSaveError(""); }
-
     function onPityEditChange(field, value) { setPityEdit((p) => ({ ...p, [field]: value })); }
-
-    function savePitySettings() {
-        const sInc = Number(pityEdit.softIncrement);
-        const hardTh = Number(pityEdit.hardThreshold);
-        const cap = Number(pityEdit.softMultiplierCap);
-        if (!Number.isInteger(sInc) || sInc <= 0) { setSettingsSaveError("softIncrement must be integer > 0"); return; }
-        if (!Number.isInteger(hardTh) || hardTh < 1) { setSettingsSaveError("hardThreshold must be integer ≥ 1"); return; }
-        if (!Number.isInteger(cap) || cap < 1) { setSettingsSaveError("cap must be integer ≥ 1"); return; }
-        const cfg = {
-            enabled: Boolean(pityEdit.enabled),
-            softIncrement: sInc,
-            hardThreshold: hardTh,
-            softMultiplierCap: cap,
-            autoResetWhenAllHardHit: Boolean(pityEdit.autoResetWhenAllHardHit),
-        };
-        if (!cfg.enabled) {
-            // clear visible counters (global scope) — adjust per your desired scope behavior
-            setPityAll({});
-            setPityHardHitsAll({});
-        }
-        setPitySettings(cfg);
-        setShowPityModal(false);
-    }
 
     function resetPityGlobal() {
         const all = { ...(pityAll || {}) };
@@ -489,6 +454,41 @@ export default function DecisionMakerApp() {
     function resetPityCurrentPreset() {
         if (!currentPresetId) { setSettingsSaveError("No preset currently applied (cannot reset per-preset)."); return; }
         resetPityForScope(currentPresetId);
+    }
+
+    // Save both dice and pity settings when clicking "Save Settings"
+    function saveSettingsModal() {
+        // validate dice
+        const diceErrs = validateDiceArray(diceEdit);
+        setDiceEditErrors(diceErrs);
+        if (Object.keys(diceErrs).length > 0) {
+            setSettingsSaveError("Fix dice validation errors before saving.");
+            return;
+        }
+        // validate pityEdit values
+        const sInc = Number(pityEdit.softIncrement);
+        const hardTh = Number(pityEdit.hardThreshold);
+        const cap = Number(pityEdit.softMultiplierCap);
+        if (!Number.isInteger(sInc) || sInc <= 0) { setSettingsSaveError("softIncrement must be integer > 0"); return; }
+        if (!Number.isInteger(hardTh) || hardTh < 1) { setSettingsSaveError("hardThreshold must be integer ≥ 1"); return; }
+        if (!Number.isInteger(cap) || cap < 1) { setSettingsSaveError("cap must be integer ≥ 1"); return; }
+
+        // commit dice
+        const normalized = diceEdit.map((r) => ({ num: Number(r.num), sec: Number(r.sec) })).sort((a, b) => a.num - b.num);
+        setDiceSettings(normalized);
+
+        // commit pity (if disabling pity and you want to also clear counters, see note)
+        const cfg = {
+            enabled: Boolean(pityEdit.enabled),
+            softIncrement: sInc,
+            hardThreshold: hardTh,
+            softMultiplierCap: cap,
+            autoResetWhenAllHardHit: Boolean(pityEdit.autoResetWhenAllHardHit),
+        };
+        setPitySettings(cfg);
+
+        // close
+        setShowSettingsModal(false);
     }
 
     // --- spin logic (dice-driven + pity) ---
@@ -689,12 +689,8 @@ export default function DecisionMakerApp() {
                                         </Button>
 
 
-                                        <Button variant="outline-secondary" onClick={openDiceModal} className="ms-1">
+                                        <Button variant="outline-secondary" onClick={() => openSettingsModal("dice")} className="ms-1">
                                             Settings
-                                        </Button>
-
-                                        <Button variant="outline-warning" onClick={openPityModal} className="ms-1">
-                                            Pity
                                         </Button>
                                     </div>
                                 </div>
@@ -839,136 +835,133 @@ export default function DecisionMakerApp() {
                 <Modal.Footer><Button variant="secondary" onClick={closeHistoryModal}>Close</Button></Modal.Footer>
             </Modal>
 
-            {/* Dice Settings Modal */}
-            <Modal show={showDiceModal} onHide={closeDiceModal} size="lg" scrollable>
-                <Modal.Header closeButton><Modal.Title>Dice Settings</Modal.Title></Modal.Header>
+            {/* Combined Settings Modal (Dice + Pity) with Tabs */}
+            <Modal show={showSettingsModal} onHide={closeSettingsModal} size="lg" scrollable>
+                <Modal.Header closeButton><Modal.Title>Settings</Modal.Title></Modal.Header>
                 <Modal.Body>
-                    <h6>Dice Faces</h6>
-                    <p className="small text-muted">Edit dice faces and durations. Dice numbers must be unique (1–50). Durations 1–60 seconds. Minimum 2 faces.</p>
+                    <Tabs activeKey={activeSettingsTab} onSelect={(k) => setActiveSettingsTab(k)} className="mb-3">
+                        {/* Dice tab */}
+                        <Tab eventKey="dice" title="Dice">
+                            <h6>Dice Faces</h6>
+                            <p className="small text-muted">Edit dice faces and durations. Dice numbers must be unique (1–50). Durations 1–60 seconds. Minimum 2 faces.</p>
+                            <div className="mb-2">
+                                {diceEdit.length === 0 ? <div className="text-muted">No faces — add one.</div> : (
+                                    <ListGroup>
+                                        {diceEdit.map((row, idx) => {
+                                            const rowErr = diceEditErrors[idx] || {};
+                                            return (
+                                                <ListGroup.Item key={idx} className="d-flex align-items-center gap-3">
+                                                    <div style={{ width: 90 }}>
+                                                        <Form.Group controlId={`dice-num-${idx}`}>
+                                                            <Form.Label className="small mb-1">Dice number</Form.Label>
+                                                            <Form.Control type="number" value={row.num} min={1} max={50} isInvalid={!!rowErr.num}
+                                                                onChange={(e) => onDiceEditChange(idx, "num", e.target.value === "" ? "" : Number(e.target.value))} />
+                                                            <div className="invalid-feedback" style={{ display: rowErr.num ? "block" : "none" }}>{rowErr.num}</div>
+                                                        </Form.Group>
+                                                    </div>
 
-                    <div className="mb-2">
-                        {diceEdit.length === 0 ? <div className="text-muted">No faces — add one.</div> : (
-                            <ListGroup>
-                                {diceEdit.map((row, idx) => {
-                                    const rowErr = diceEditErrors[idx] || {};
-                                    return (
-                                        <ListGroup.Item key={idx} className="d-flex align-items-center gap-3">
-                                            <div style={{ width: 90 }}>
-                                                <Form.Group controlId={`dice-num-${idx}`}>
-                                                    <Form.Label className="small mb-1">Dice number</Form.Label>
-                                                    <Form.Control type="number" value={row.num} min={1} max={50} isInvalid={!!rowErr.num}
-                                                        onChange={(e) => onDiceEditChange(idx, "num", e.target.value === "" ? "" : Number(e.target.value))} />
-                                                    <div className="invalid-feedback" style={{ display: rowErr.num ? "block" : "none" }}>{rowErr.num}</div>
-                                                </Form.Group>
-                                            </div>
-                                            <div style={{ width: 140 }}>
-                                                <Form.Group controlId={`dice-sec-${idx}`}>
-                                                    <Form.Label className="small mb-1">Duration (s)</Form.Label>
-                                                    <Form.Control type="number" value={row.sec} min={1} max={60} isInvalid={!!rowErr.sec}
-                                                        onChange={(e) => onDiceEditChange(idx, "sec", e.target.value === "" ? "" : Number(e.target.value))} />
-                                                    <div className="invalid-feedback" style={{ display: rowErr.sec ? "block" : "none" }}>{rowErr.sec}</div>
-                                                </Form.Group>
-                                            </div>
-                                            <div className="ms-auto d-flex gap-2">
-                                                <Button size="sm" variant="outline-danger" onClick={() => deleteDiceRow(idx)} disabled={diceEdit.length <= 2}>Delete</Button>
-                                            </div>
-                                        </ListGroup.Item>
-                                    );
-                                })}
-                            </ListGroup>
-                        )}
-                    </div>
+                                                    <div style={{ width: 140 }}>
+                                                        <Form.Group controlId={`dice-sec-${idx}`}>
+                                                            <Form.Label className="small mb-1">Duration (s)</Form.Label>
+                                                            <Form.Control type="number" value={row.sec} min={1} max={60} isInvalid={!!rowErr.sec}
+                                                                onChange={(e) => onDiceEditChange(idx, "sec", e.target.value === "" ? "" : Number(e.target.value))} />
+                                                            <div className="invalid-feedback" style={{ display: rowErr.sec ? "block" : "none" }}>{rowErr.sec}</div>
+                                                        </Form.Group>
+                                                    </div>
 
-                    <div className="d-flex gap-2 mb-3">
-                        <Button onClick={addDiceRow}>Add Face</Button>
-                        <Button variant="outline-secondary" onClick={resetDiceToDefaults}>Reset to Defaults</Button>
-                    </div>
+                                                    <div className="ms-auto d-flex gap-2">
+                                                        <Button size="sm" variant="outline-danger" onClick={() => deleteDiceRow(idx)} disabled={diceEdit.length <= 2}>Delete</Button>
+                                                    </div>
+                                                </ListGroup.Item>
+                                            );
+                                        })}
+                                    </ListGroup>
+                                )}
+                            </div>
+
+                            <div className="d-flex gap-2 mb-3">
+                                <Button onClick={addDiceRow}>Add Face</Button>
+                                <Button variant="outline-secondary" onClick={resetDiceToDefaults}>Reset to Defaults</Button>
+                            </div>
+                        </Tab>
+
+                        {/* Pity tab */}
+                        <Tab eventKey="pity" title="Pity">
+                            <h6>Pity Settings</h6>
+                            <p className="small text-muted">Hybrid pity: soft-weight + hard guarantee. Toggle pity on/off, tune parameters, and reset counters.</p>
+
+                            <Form>
+                                <Form.Check type="switch" id="toggle-pity" label={`Pity enabled: ${pityEdit.enabled ? "ON" : "OFF"}`}
+                                    checked={!!pityEdit.enabled} onChange={(e) => onPityEditChange("enabled", e.target.checked)} />
+
+                                <div className="d-flex gap-3 mt-2 align-items-center">
+                                    <Form.Group controlId="softIncrement">
+                                        <Form.Label className="small mb-1">softIncrement</Form.Label>
+                                        <Form.Control type="number" value={pityEdit.softIncrement} min={1} onChange={(e) => onPityEditChange("softIncrement", Number(e.target.value))} />
+                                        <div className="small text-muted">Amount to add to weight per miss.</div>
+                                    </Form.Group>
+
+                                    <Form.Group controlId="hardThreshold">
+                                        <Form.Label className="small mb-1">hardThreshold</Form.Label>
+                                        <Form.Control type="number" value={pityEdit.hardThreshold} min={1} onChange={(e) => onPityEditChange("hardThreshold", Number(e.target.value))} />
+                                        <div className="small text-muted">Guarantee after this many misses.</div>
+                                    </Form.Group>
+
+                                    <Form.Group controlId="cap">
+                                        <Form.Label className="small mb-1">softMultiplierCap</Form.Label>
+                                        <Form.Control type="number" value={pityEdit.softMultiplierCap} min={1} onChange={(e) => onPityEditChange("softMultiplierCap", Number(e.target.value))} />
+                                        <div className="small text-muted">Max multiplier for soft-pity.</div>
+                                    </Form.Group>
+                                </div>
+
+                                <Form.Check type="checkbox" id="autoReset" className="mt-2"
+                                    label="Auto-reset pity when every face has been hit by a hard-pity"
+                                    checked={!!pityEdit.autoResetWhenAllHardHit} onChange={(e) => onPityEditChange("autoResetWhenAllHardHit", e.target.checked)} />
+
+                                <hr />
+
+                                <h6>Pity Counters (scope)</h6>
+                                <div className="d-flex gap-2 align-items-center mb-2">
+                                    <Form.Check type="radio" id="scope-global" label="Global" checked={pityScopeChoice === "global"} onChange={() => setPityScopeChoice("global")} />
+                                    <Form.Check type="radio" id="scope-preset" label={`Current preset (${currentPresetId ? currentPresetId : "none"})`} checked={pityScopeChoice === "preset"} onChange={() => setPityScopeChoice("preset")} disabled={!currentPresetId} />
+                                </div>
+
+                                <div className="small text-muted mb-2">Showing pity counters for: <strong>{pityScopeChoice === "global" ? "global" : currentPresetId}</strong></div>
+
+                                <div style={{ maxHeight: 200, overflow: "auto" }}>
+                                    <ListGroup>
+                                        {decisions.length === 0 ? <ListGroup.Item className="text-muted">No decisions</ListGroup.Item> :
+                                            decisions.map((d, idx) => {
+                                                const key = decisionKeyFromText(d);
+                                                const scopeKey = pityScopeChoice === "global" ? "global" : (currentPresetId || "global");
+                                                const map = (pityAll && pityAll[scopeKey]) ? pityAll[scopeKey] : {};
+                                                const val = Number(map[key] || 0);
+                                                return (
+                                                    <ListGroup.Item key={idx} className="d-flex justify-content-between align-items-center">
+                                                        <div style={{ wordBreak: "break-word" }}>{d}</div>
+                                                        <div className="small text-muted">pity: <strong>{val}</strong></div>
+                                                    </ListGroup.Item>
+                                                );
+                                            })}
+                                    </ListGroup>
+                                </div>
+
+                                <div className="d-flex gap-2 mt-3">
+                                    <Button variant="outline-danger" onClick={() => { if (pityScopeChoice === "global") resetPityGlobal(); else resetPityCurrentPreset(); }}>Reset Pity Counters (scope)</Button>
+                                    <Button variant="outline-secondary" onClick={() => { setPityAll({}); setPityHardHitsAll({}); }}>Reset All Pity</Button>
+                                </div>
+                            </Form>
+                        </Tab>
+                    </Tabs>
 
                     {settingsSaveError && <div className="mt-3 text-danger small">{settingsSaveError}</div>}
                 </Modal.Body>
+
                 <Modal.Footer>
-                    <Button variant="secondary" onClick={closeDiceModal}>Cancel</Button>
-                    <Button variant="primary" onClick={saveDiceSettings}>Save Dice</Button>
+                    <Button variant="secondary" onClick={closeSettingsModal}>Cancel</Button>
+                    <Button variant="primary" onClick={saveSettingsModal}>Save Settings</Button>
                 </Modal.Footer>
             </Modal>
-
-            {/* Pity Modal */}
-            <Modal show={showPityModal} onHide={closePityModal} size="lg" scrollable>
-                <Modal.Header closeButton><Modal.Title>Pity Settings & Counters</Modal.Title></Modal.Header>
-                <Modal.Body>
-                    <h6>Pity Settings</h6>
-                    <p className="small text-muted">Hybrid pity: soft-weight + hard guarantee. Toggle pity on/off, tune parameters, and reset counters.</p>
-
-                    <Form>
-                        <Form.Check type="switch" id="toggle-pity" label={`Pity enabled: ${pityEdit.enabled ? "ON" : "OFF"}`}
-                            checked={!!pityEdit.enabled} onChange={(e) => onPityEditChange("enabled", e.target.checked)} />
-
-                        <div className="d-flex gap-3 mt-2 align-items-center">
-                            <Form.Group controlId="softIncrement">
-                                <Form.Label className="small mb-1">softIncrement</Form.Label>
-                                <Form.Control type="number" value={pityEdit.softIncrement} min={1} onChange={(e) => onPityEditChange("softIncrement", Number(e.target.value))} />
-                                <div className="small text-muted">Amount to add to weight per miss.</div>
-                            </Form.Group>
-
-                            <Form.Group controlId="hardThreshold">
-                                <Form.Label className="small mb-1">hardThreshold</Form.Label>
-                                <Form.Control type="number" value={pityEdit.hardThreshold} min={1} onChange={(e) => onPityEditChange("hardThreshold", Number(e.target.value))} />
-                                <div className="small text-muted">Guarantee after this many misses.</div>
-                            </Form.Group>
-
-                            <Form.Group controlId="cap">
-                                <Form.Label className="small mb-1">softMultiplierCap</Form.Label>
-                                <Form.Control type="number" value={pityEdit.softMultiplierCap} min={1} onChange={(e) => onPityEditChange("softMultiplierCap", Number(e.target.value))} />
-                                <div className="small text-muted">Max multiplier for soft-pity.</div>
-                            </Form.Group>
-                        </div>
-
-                        <Form.Check type="checkbox" id="autoReset" className="mt-2"
-                            label="Auto-reset pity when every face has been hit by a hard-pity"
-                            checked={!!pityEdit.autoResetWhenAllHardHit} onChange={(e) => onPityEditChange("autoResetWhenAllHardHit", e.target.checked)} />
-
-                        <hr />
-
-                        <h6>Pity Counters (scope)</h6>
-                        <div className="d-flex gap-2 align-items-center mb-2">
-                            <Form.Check type="radio" id="scope-global" label="Global" checked={pityScopeChoice === "global"} onChange={() => setPityScopeChoice("global")} />
-                            <Form.Check type="radio" id="scope-preset" label={`Current preset (${currentPresetId ? currentPresetId : "none"})`} checked={pityScopeChoice === "preset"} onChange={() => setPityScopeChoice("preset")} disabled={!currentPresetId} />
-                        </div>
-
-                        <div className="small text-muted mb-2">Showing pity counters for: <strong>{pityScopeChoice === "global" ? "global" : currentPresetId}</strong></div>
-
-                        <div style={{ maxHeight: 200, overflow: "auto" }}>
-                            <ListGroup>
-                                {decisions.length === 0 ? <ListGroup.Item className="text-muted">No decisions</ListGroup.Item> :
-                                    decisions.map((d, idx) => {
-                                        const key = decisionKeyFromText(d);
-                                        const scopeKey = pityScopeChoice === "global" ? "global" : (currentPresetId || "global");
-                                        const map = (pityAll && pityAll[scopeKey]) ? pityAll[scopeKey] : {};
-                                        const val = Number(map[key] || 0);
-                                        return (
-                                            <ListGroup.Item key={idx} className="d-flex justify-content-between align-items-center">
-                                                <div style={{ wordBreak: "break-word" }}>{d}</div>
-                                                <div className="small text-muted">pity: <strong>{val}</strong></div>
-                                            </ListGroup.Item>
-                                        );
-                                    })}
-                            </ListGroup>
-                        </div>
-
-                        <div className="d-flex gap-2 mt-3">
-                            <Button variant="outline-danger" onClick={() => { if (pityScopeChoice === "global") resetPityGlobal(); else resetPityCurrentPreset(); }}>Reset Pity Counters (scope)</Button>
-                            <Button variant="outline-secondary" onClick={() => { setPityAll({}); setPityHardHitsAll({}); }}>Reset All Pity</Button>
-                        </div>
-                    </Form>
-
-                    {settingsSaveError && <div className="mt-3 text-danger small">{settingsSaveError}</div>}
-                </Modal.Body>
-                <Modal.Footer>
-                    <Button variant="secondary" onClick={closePityModal}>Cancel</Button>
-                    <Button variant="primary" onClick={savePitySettings}>Save Pity</Button>
-                </Modal.Footer>
-            </Modal>
-
             {/* Footer with author and GitHub link */}
             <footer className="pt-3 w-100 bg-white border-top mt-auto">
                 <Container>
