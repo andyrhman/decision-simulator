@@ -87,6 +87,11 @@ export default function DecisionMakerApp() {
         return readFromStorage(PITY_SETTINGS_KEY, DEFAULT_PITY_SETTINGS);
     }
 
+    function resolveScopeKey(scopeChoice) {
+        if (scopeChoice === "preset" && currentPresetId) return currentPresetId;
+        return "global";
+    }
+
     // --- state ---
     const [input, setInput] = useState("");
     const [decisions, setDecisions] = useState(() => readDecisions() || []);
@@ -370,14 +375,21 @@ export default function DecisionMakerApp() {
         setDiceEdit(diceSettings.map((d) => ({ num: d.num, sec: d.sec })));
         setDiceEditErrors({});
         setPityEdit({ ...pitySettings });
-        setPityScopeChoice(() => {
-            try {
-                if (currentPresetId && pityAll && Object.prototype.hasOwnProperty.call(pityAll, currentPresetId)) {
-                    return "preset";
-                }
-            } catch (e) { /* ignore */ }
-            return "global";
-        });
+        const saved = (pitySettings && pitySettings.lastSelectedScope) ? pitySettings.lastSelectedScope : null;
+        if (saved === "preset") {
+            setPityScopeChoice(currentPresetId ? "preset" : "global");
+        } else if (saved === "global") {
+            setPityScopeChoice("global");
+        } else {
+            setPityScopeChoice(() => {
+                try {
+                    if (currentPresetId && pityAll && Object.prototype.hasOwnProperty.call(pityAll, currentPresetId)) {
+                        return "preset";
+                    }
+                } catch (e) { /* ignore */ }
+                return "global";
+            });
+        }
         setSettingsSaveError("");
         setActiveSettingsTab(tab === "pity" ? "pity" : "dice");
         setShowSettingsModal(true);
@@ -493,7 +505,12 @@ export default function DecisionMakerApp() {
             softMultiplierCap: cap,
             autoResetWhenAllHardHit: Boolean(pityEdit.autoResetWhenAllHardHit),
         };
-        setPitySettings(cfg);
+        const cfgWithScope = { ...cfg, lastSelectedScope: pityScopeChoice };
+        if (pityScopeChoice === "preset" && !currentPresetId) {
+            // guard: if there's no preset applied, fallback to global
+            setPityScopeChoice("global");
+        }
+        setPitySettings(cfgWithScope);
 
         // close
         setShowSettingsModal(false);
@@ -514,7 +531,7 @@ export default function DecisionMakerApp() {
                     duration: diceDurationSec ?? null,
                     method: "manual-stop",
                 });
-                const scope = (pityScopeChoice === "preset" && currentPresetId) ? currentPresetId : "global";
+                const scope = resolveScopeKey(pityScopeChoice);
                 // Only update pity if it's enabled in saved settings
                 if (pitySettings && pitySettings.enabled) {
                     applyPityUpdate(scope, decisions, activeIndex, "manual-stop");
@@ -538,7 +555,7 @@ export default function DecisionMakerApp() {
         const desiredMs = Math.max(300, Math.round(chosenSec * 1000));
 
         // pick final using pity
-        const scope = (pityScopeChoice === "preset" && currentPresetId) ? currentPresetId : "global";
+        const scope = resolveScopeKey(pityScopeChoice);
         const pityCountsForScope = (pityAll && pityAll[scope]) ? { ...pityAll[scope] } : {};
         const cfg = pitySettings || DEFAULT_PITY_SETTINGS;
         const pickResult = cfg.enabled ? pickWithPity(decisions, pityCountsForScope, cfg) : { chosenIndex: Math.floor(Math.random() * decisions.length), method: "none" };
@@ -628,6 +645,8 @@ export default function DecisionMakerApp() {
             }
         });
     }, []);
+
+    const currentPresetName = currentPresetId ? (presets.find(p => p.id === currentPresetId)?.name || currentPresetId) : "";
 
     function restartFromStart() { setActiveIndex(decisions.length > 0 ? 0 : -1); }
 
@@ -739,7 +758,7 @@ export default function DecisionMakerApp() {
                                             <ListGroup>
                                                 {decisions.map((d, i) => {
                                                     const pk = decisionKeyFromText(d);
-                                                    const scope = (pityScopeChoice === "preset" && currentPresetId) ? currentPresetId : "global";
+                                                    const scope = resolveScopeKey(pityScopeChoice);
                                                     const countsForScope = (pityAll && pityAll[scope]) ? pityAll[scope] : {};
                                                     const pityCount = Number(countsForScope[pk] || 0);
                                                     return (
@@ -958,7 +977,7 @@ export default function DecisionMakerApp() {
                                 <h6>Pity Counters (scope)</h6>
                                 <div className="d-flex gap-2 align-items-center mb-2">
                                     <Form.Check type="radio" id="scope-global" label="Global" checked={pityScopeChoice === "global"} onChange={() => setPityScopeChoice("global")} />
-                                    <Form.Check type="radio" id="scope-preset" label={`Current preset (${currentPresetId ? currentPresetId : "none"})`} checked={pityScopeChoice === "preset"} onChange={() => setPityScopeChoice("preset")} disabled={!currentPresetId} />
+                                    <Form.Check type="radio" id="scope-preset" label={`Current preset (${currentPresetName || "none"})`} checked={pityScopeChoice === "preset"} onChange={() => setPityScopeChoice("preset")} disabled={!currentPresetId} />
                                 </div>
 
                                 <div className="small text-muted mb-2">Showing pity counters for: <strong>{pityScopeChoice === "global" ? "global" : currentPresetId}</strong></div>
@@ -968,7 +987,7 @@ export default function DecisionMakerApp() {
                                         {decisions.length === 0 ? <ListGroup.Item className="text-muted">No decisions</ListGroup.Item> :
                                             decisions.map((d, idx) => {
                                                 const key = decisionKeyFromText(d);
-                                                const scopeKey = pityScopeChoice === "global" ? "global" : (currentPresetId || "global");
+                                                const scopeKey = resolveScopeKey(pityScopeChoice);
                                                 const map = (pityAll && pityAll[scopeKey]) ? pityAll[scopeKey] : {};
                                                 const val = Number(map[key] || 0);
                                                 return (
@@ -982,7 +1001,9 @@ export default function DecisionMakerApp() {
                                 </div>
 
                                 <div className="d-flex gap-2 mt-3">
-                                    <Button variant="outline-danger" onClick={() => { const selectedScopeKey = (pityScopeChoice === "preset" && currentPresetId) ? currentPresetId : "global"; resetPityForScope(selectedScopeKey); }}>Reset Pity Counters (scope)</Button>
+                                    <Button variant="outline-danger" onClick={() => {
+                                        const selectedScopeKey = resolveScopeKey(pityScopeChoice); resetPityForScope(selectedScopeKey);
+                                    }}>Reset Pity Counters (scope)</Button>
                                     <Button variant="outline-secondary" onClick={() => { setPityAll({}); setPityHardHitsAll({}); }}>Reset All Pity</Button>
                                 </div>
                             </Form>
