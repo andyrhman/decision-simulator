@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
+import moment from "moment-timezone";
 import "bootstrap/dist/css/bootstrap.min.css";
 import "bootstrap-icons/font/bootstrap-icons.css";
 import {
@@ -22,6 +23,7 @@ const DICE_STORAGE_KEY = "dice_v1";
 const PITY_STORAGE_KEY = "pity_v1";
 const PITY_HARDHITS_KEY = "pity_hardhits_v1";
 const PITY_SETTINGS_KEY = "pity_settings_v1";
+const TIMEZONE_COOKIE = "dm_timezone";
 
 // Default dice mapping (used when no saved settings)
 const DEFAULT_DICE = [
@@ -61,6 +63,69 @@ export default function DecisionMakerApp() {
             console.warn("saveToStorage error", key, err);
         }
     }
+
+    function formatDateWithMoment(date, tzValue) {
+        // tzValue can be: IANA name or "offset:+08:30" or bare "+08:30"
+        const canon = normalizeTzStorageValue(tzValue) || "Asia/Makassar";
+        if (String(canon).startsWith("offset:")) {
+            const offs = String(canon).slice("offset:".length);
+            return moment.utc(date).utcOffset(offs).format("dddd, D MMMM YYYY HH:mm:ss");
+        }
+        // canon should be an IANA zone at this point
+        try {
+            return moment.tz(date, canon).format("dddd, D MMMM YYYY HH:mm:ss");
+        } catch (err) {
+            // fallback: return Makassar time
+            return moment.tz(date, "Asia/Makassar").format("dddd, D MMMM YYYY HH:mm:ss");
+        }
+    }
+
+    function setCookie(name, value, days = 365) {
+        const expires = new Date(Date.now() + days * 864e5).toUTCString();
+        document.cookie = name + "=" + encodeURIComponent(value) + "; expires=" + expires + "; path=/";
+    }
+    function getCookie(name) {
+        return document.cookie.split("; ").reduce((r, v) => {
+            const parts = v.split("=");
+            return parts[0] === name ? decodeURIComponent(parts.slice(1).join("=")) : r;
+        }, null);
+    }
+    // parse an offset string like "+08:00" or "-05:30" => minutes
+    function parseOffsetToMinutes(offsetStr) {
+        if (!offsetStr || typeof offsetStr !== "string") return 0;
+        const m = offsetStr.match(/^([+-])(\d{1,2}):?(\d{2})?$/);
+        if (!m) return 0;
+        const sign = m[1] === "+" ? 1 : -1;
+        const hours = parseInt(m[2], 10);
+        const mins = m[3] ? parseInt(m[3], 10) : 0;
+        return sign * (hours * 60 + mins);
+    }
+    function formatDateWithOffset(date, offsetMinutes) {
+        // create a new Date that is date + offsetMinutes
+        const utc = date.getTime() + date.getTimezoneOffset() * 60000;
+        const localTs = utc + offsetMinutes * 60000;
+        const d = new Date(localTs);
+        // format as e.g. "2026-01-13 14:22:09"
+        const opts = {
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit",
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+            hour12: false,
+        };
+        // using toLocaleString for consistent human readable string
+        return d.toLocaleString(undefined, opts).replace(",", "");
+    }
+    function normalizeTzStorageValue(v) {
+        if (!v) return v;
+        const s = String(v);
+        if (s === "custom") return null;
+        if (s.startsWith("offset:")) return s;
+        if (/^[+-]\d{1,2}:\d{2}$/.test(s)) return `offset:${s}`;
+        return s; // assume IANA
+    }
     function readPresets() {
         return readFromStorage("presets_v1", []);
     }
@@ -93,6 +158,19 @@ export default function DecisionMakerApp() {
     }
 
     // --- state ---
+    // timezone initial: cookie or IANA fallback to Asia/Makassar
+    const initialTZ = normalizeTzStorageValue(getCookie(TIMEZONE_COOKIE)) || "Asia/Makassar";
+    // preview-only timezone (used inside Settings modal)
+    const [previewTimezoneValue, setPreviewTimezoneValue] = useState(null); // e.g. "Asia/Makassar" or "offset:+08:30"
+    // human readable preview string shown in the modal
+    const [previewTimeStr, setPreviewTimeStr] = useState("");
+    // control select mode (iana/custom)
+    const [timezoneSelectMode, setTimezoneSelectMode] = useState("iana");
+
+    // --- app state (kept consistent with your previous structure) ---
+    const [timezoneValue, setTimezoneValue] = useState(initialTZ); // stores IANA or 'offset:+HH:MM'
+    const [zoneList, setZoneList] = useState(() => moment.tz.names()); // full IANA list from moment-timezone
+
     const [input, setInput] = useState("");
     const [decisions, setDecisions] = useState(() => readDecisions() || []);
     const [activeIndex, setActiveIndex] = useState(-1);
@@ -124,6 +202,15 @@ export default function DecisionMakerApp() {
     const [pityEdit, setPityEdit] = useState({ ...readPitySettings() });
     const [pityScopeChoice, setPityScopeChoice] = useState("global");
     const [settingsSaveError, setSettingsSaveError] = useState("");
+
+    // custom offset input & preview helpers
+    const [customOffsetInput, setCustomOffsetInput] = useState(() => {
+        if (String(timezoneValue || "").startsWith("offset:")) return String(timezoneValue).slice("offset:".length);
+        return "+08:00";
+    });
+
+    // time display on main card
+    const [currentTimeStr, setCurrentTimeStr] = useState(() => formatDateWithMoment(new Date(), initialTZ));
 
     // UI dice/progress
     const [diceRoll, setDiceRoll] = useState(null);
@@ -350,6 +437,8 @@ export default function DecisionMakerApp() {
                 dice: entry.dice ?? null,
                 duration: entry.duration ?? null,
                 method: entry.method ?? null,
+                presetName: entry.presetName ?? null,
+                pityHit: entry.pityHit ?? null,
             };
         } else {
             return;
@@ -371,10 +460,10 @@ export default function DecisionMakerApp() {
     function goHistoryNext() { setHistoryPage((p) => Math.min(historyTotalPages, p + 1)); }
 
     function openSettingsModal(tab = "dice") {
-        // prepare dice edit & pity edit snapshots
         setDiceEdit(diceSettings.map((d) => ({ num: d.num, sec: d.sec })));
         setDiceEditErrors({});
         setPityEdit({ ...pitySettings });
+        // prefer lastSelectedScope if present; otherwise preset if preset has data; else global
         const saved = (pitySettings && pitySettings.lastSelectedScope) ? pitySettings.lastSelectedScope : null;
         if (saved === "preset") {
             setPityScopeChoice(currentPresetId ? "preset" : "global");
@@ -386,12 +475,16 @@ export default function DecisionMakerApp() {
                     if (currentPresetId && pityAll && Object.prototype.hasOwnProperty.call(pityAll, currentPresetId)) {
                         return "preset";
                     }
-                } catch (e) { /* ignore */ }
+                } catch (e) { }
                 return "global";
             });
         }
+        const canonical = normalizeTzStorageValue(getCookie(TIMEZONE_COOKIE) || timezoneValue) || timezoneValue;
+        setPreviewTimezoneValue(canonical);
+        setPreviewTimeStr(formatDateWithMoment(new Date(), canonical));
+        setTimezoneSelectMode(canonical && String(canonical).startsWith("offset:") ? "custom" : "iana");
         setSettingsSaveError("");
-        setActiveSettingsTab(tab === "pity" ? "pity" : "dice");
+        setActiveSettingsTab(tab === "pity" ? "pity" : (tab === "general" ? "general" : "dice"));
         setShowSettingsModal(true);
     }
     function closeSettingsModal() {
@@ -462,6 +555,25 @@ export default function DecisionMakerApp() {
 
     function onPityEditChange(field, value) { setPityEdit((p) => ({ ...p, [field]: value })); }
 
+    function previewCustomOffset(rawInput) {
+        setSettingsSaveError("");
+        const s = String(rawInput || "").trim();
+        const m = s.match(/^([+-])?(\d{1,2}):?(\d{2})$/);
+        if (!m) {
+            setSettingsSaveError("Custom offset must look like +08:30 or -05:45");
+            return null;
+        }
+        const sign = m[1] === "-" ? "-" : "+";
+        const hh = Number(m[2]);
+        const mm = Number(m[3]);
+        if (hh < 0 || hh > 14 || mm < 0 || mm > 59) {
+            setSettingsSaveError("Custom offset out of allowed range");
+            return null;
+        }
+        const canonical = `${sign}${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
+        return canonical; // caller will prefix "offset:" and set preview
+    }
+
     function resetPityGlobal() {
         const all = { ...(pityAll || {}) };
         all["global"] = {};
@@ -485,7 +597,7 @@ export default function DecisionMakerApp() {
             setSettingsSaveError("Fix dice validation errors before saving.");
             return;
         }
-        // validate pityEdit values
+        // validate pity
         const sInc = Number(pityEdit.softIncrement);
         const hardTh = Number(pityEdit.hardThreshold);
         const cap = Number(pityEdit.softMultiplierCap);
@@ -497,23 +609,28 @@ export default function DecisionMakerApp() {
         const normalized = diceEdit.map((r) => ({ num: Number(r.num), sec: Number(r.sec) })).sort((a, b) => a.num - b.num);
         setDiceSettings(normalized);
 
-        // commit pity (if disabling pity and you want to also clear counters, see note)
+        // commit pity (and remember lastSelectedScope)
         const cfg = {
             enabled: Boolean(pityEdit.enabled),
             softIncrement: sInc,
             hardThreshold: hardTh,
             softMultiplierCap: cap,
             autoResetWhenAllHardHit: Boolean(pityEdit.autoResetWhenAllHardHit),
+            lastSelectedScope: pityScopeChoice,
         };
-        const cfgWithScope = { ...cfg, lastSelectedScope: pityScopeChoice };
-        if (pityScopeChoice === "preset" && !currentPresetId) {
-            // guard: if there's no preset applied, fallback to global
-            setPityScopeChoice("global");
-        }
-        setPitySettings(cfgWithScope);
+        setPitySettings(cfg);
+        // decide which timezone to save: prefer previewTimezoneValue, else current timezoneValue
+        const tzToSave = normalizeTzStorageValue(previewTimezoneValue || timezoneValue) || "Asia/Makassar";
+        setCookie(TIMEZONE_COOKIE, tzToSave, 365);
+        // commit
+        setTimezoneValue(tzToSave);
+        // clear preview state now that we've saved
+        setPreviewTimezoneValue(null);
+        setPreviewTimeStr("");
+        setTimezoneSelectMode(tzToSave && tzToSave.startsWith("offset:") ? "custom" : "iana");
 
-        // close
         setShowSettingsModal(false);
+        setSettingsSaveError("");
     }
 
     // --- spin logic (dice-driven + pity) ---
@@ -525,14 +642,17 @@ export default function DecisionMakerApp() {
         setIsRunning(false);
         if (wasRunning && activeIndex >= 0 && decisions[activeIndex]) {
             try {
+                const presetName = currentPresetId ? (presets.find(p => p.id === currentPresetId)?.name || null) : null;
                 addHistoryEntry({
                     decision: decisions[activeIndex],
                     dice: diceRoll ?? null,
                     duration: diceDurationSec ?? null,
                     method: "manual-stop",
+                    presetName,
+                    pityHit: (pitySettings && pitySettings.enabled) ? "manual-stop" : null,
                 });
+
                 const scope = resolveScopeKey(pityScopeChoice);
-                // Only update pity if it's enabled in saved settings
                 if (pitySettings && pitySettings.enabled) {
                     applyPityUpdate(scope, decisions, activeIndex, "manual-stop");
                 }
@@ -573,7 +693,7 @@ export default function DecisionMakerApp() {
             const pct = Math.min(100, Math.round((elapsed / desiredMs) * 100));
             setProgress(pct);
             if (elapsed >= desiredMs) { clearInterval(progressIntervalRef.current); progressIntervalRef.current = null; }
-        }, 40);
+        }, 100);
 
         const baseDelay = 30;
         const estimatedFactor = 11;
@@ -598,12 +718,16 @@ export default function DecisionMakerApp() {
                     if (spinRunningRef.current) {
                         setActiveIndex(finalChosenIndex);
                         try {
-                            // record history with dice info and method (soft-weight/hard-pity/none)
+                            const presetName = currentPresetId ? (presets.find(p => p.id === currentPresetId)?.name || null) : null;
+                            const pityHit = (pitySettings && pitySettings.enabled) ? pickMethod : null;
+                            // record history with extra info
                             addHistoryEntry({
                                 decision: decisions[finalChosenIndex],
                                 dice: rollNumber,
                                 duration: chosenSec,
                                 method: pickMethod,
+                                presetName,
+                                pityHit,
                             });
                         } catch (err) { console.warn(err); }
 
@@ -646,10 +770,37 @@ export default function DecisionMakerApp() {
         });
     }, []);
 
+    useEffect(() => {
+        const id = setInterval(() => {
+            setCurrentTimeStr(formatDateWithMoment(new Date(), timezoneValue));
+        }, 1000);
+        setCurrentTimeStr(formatDateWithMoment(new Date(), timezoneValue));
+        return () => clearInterval(id);
+    }, [timezoneValue]); // only re-run when committed timezoneValue changes
+
+    useEffect(() => {
+        return () => {
+            if (spinTimeoutRef.current) clearTimeout(spinTimeoutRef.current);
+            if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
+            spinRunningRef.current = false;
+        };
+    }, []);
+
+    useEffect(() => {
+        const tz = normalizeTzStorageValue(getCookie(TIMEZONE_COOKIE) || "");
+        if (tz && tz.startsWith("offset:")) {
+            setTimezoneValue("custom");
+            setCustomOffsetInput(tz.replace("offset:", ""));
+            setPreviewTimezoneValue(tz);
+        } else if (tz) {
+            setTimezoneValue(tz);
+        }
+    }, []);
+
+
     const currentPresetName = currentPresetId ? (presets.find(p => p.id === currentPresetId)?.name || currentPresetId) : "";
 
     function restartFromStart() { setActiveIndex(decisions.length > 0 ? 0 : -1); }
-
 
     // --- render (keeps your exact layout) ---
     return (
@@ -661,7 +812,13 @@ export default function DecisionMakerApp() {
                         {/* Constrain card height so footer doesn't force scroll on large monitors */}
                         <Card className="shadow-sm" style={{ maxHeight: '80vh', overflow: 'auto' }}>
                             <Card.Body>
-                                <h3 className="text-center mb-3">Decision Simulator 🎲</h3>
+
+                                <h3 className="text-center mb-0" style={{ flex: 1 }}>Decision Simulator 🎲</h3>
+                                <div className="d-flex justify-content-end mb-2">
+                                    <div className="text-end small text-muted" style={{ minWidth: 260 }}>
+                                        <div>{currentTimeStr}</div>
+                                    </div>
+                                </div>
 
                                 {/* Dice info + progress (kept compact to preserve layout) */}
                                 <div className="d-flex justify-content-between align-items-center mb-2">
@@ -869,17 +1026,13 @@ export default function DecisionMakerApp() {
                                         <div className="small text-muted">{new Date(h.timestamp).toLocaleString()}</div>
                                     </div>
 
-                                    {/* Show dice + duration + method if present */}
+                                    {/* show dice/duration/method */}
                                     <div className="d-flex gap-3 align-items-center">
-                                        {h.dice != null ? (
-                                            <div className="small text-muted">Dice: <Badge bg="info">{h.dice}</Badge></div>
-                                        ) : null}
-                                        {h.duration != null ? (
-                                            <div className="small text-muted">Duration: <strong>{h.duration}s</strong></div>
-                                        ) : null}
-                                        {h.method ? (
-                                            <div className="small text-muted">Method: <em>{h.method}</em></div>
-                                        ) : null}
+                                        {h.dice != null ? (<div className="small text-muted">Dice: <Badge bg="info">{h.dice}</Badge></div>) : null}
+                                        {h.duration != null ? (<div className="small text-muted">Duration: <strong>{h.duration}s</strong></div>) : null}
+                                        {h.method ? (<div className="small text-muted">Method: <em>{h.method}</em></div>) : null}
+                                        {h.presetName ? (<div className="small text-muted">Preset: <strong>{h.presetName}</strong></div>) : null}
+                                        {h.pityHit ? (<div className="small text-muted">Pity: <strong>{h.pityHit}</strong></div>) : null}
                                     </div>
                                 </ListGroup.Item>
                             ))}
@@ -940,7 +1093,7 @@ export default function DecisionMakerApp() {
                         </Tab>
 
                         {/* Pity tab */}
-                        <Tab eventKey="pity" title="Pity (Beta)">
+                        <Tab eventKey="pity" title="Pity">
                             <h6>Pity Settings</h6>
                             <p className="small text-muted">Hybrid pity: soft-weight + hard guarantee. Toggle pity on/off, tune parameters, and reset counters.</p>
 
@@ -1008,6 +1161,76 @@ export default function DecisionMakerApp() {
                                 </div>
                             </Form>
                         </Tab>
+                        <Tab eventKey="general" title="General">
+                            <h6>Locale / Timezone</h6>
+                            <p className="small text-muted">
+                                Select an IANA timezone or use a custom minute offset (e.g. +08:30). Saved in a cookie.
+                            </p>
+
+                            <Form.Group controlId="tzSelect" className="mb-3" style={{ maxWidth: 520 }}>
+                                <Form.Label className="small mb-1">Timezone</Form.Label>
+
+                                <Form.Select
+                                    value={timezoneSelectMode === "custom" ? "custom" : (zoneList.includes(previewTimezoneValue) ? previewTimezoneValue : (previewTimezoneValue && String(previewTimezoneValue).startsWith("offset:") ? "custom" : previewTimezoneValue))}
+                                    onChange={(e) => {
+                                        const v = e.target.value;
+                                        if (v === "custom") {
+                                            setTimezoneSelectMode("custom");
+                                            // prefill custom input if cookie has offset
+                                            const cookie = normalizeTzStorageValue(getCookie(TIMEZONE_COOKIE) || "");
+                                            if (cookie && cookie.startsWith("offset:")) setCustomOffsetInput(cookie.replace("offset:", ""));
+                                            return;
+                                        } else {
+                                            // user selected an IANA zone — update *preview* only (do not commit)
+                                            setTimezoneSelectMode("iana");
+                                            setPreviewTimezoneValue(v);
+                                            setPreviewTimeStr(formatDateWithMoment(new Date(), v));
+                                        }
+                                    }}
+                                >
+                                    <option value="UTC">UTC</option>
+                                    <optgroup label="IANA timezones">
+                                        {zoneList.map((z) => <option key={z} value={z}>{z}</option>)}
+                                    </optgroup>
+                                    <option value="custom">Custom offset (±HH:MM)</option>
+                                </Form.Select>
+
+                                {/* show custom input only when custom mode OR previewTimezoneValue is offset:... */}
+                                {(timezoneSelectMode === "custom" || (previewTimezoneValue && String(previewTimezoneValue).startsWith("offset:"))) && (
+                                    <div className="mt-2 d-flex gap-2 align-items-center">
+                                        <Form.Control
+                                            placeholder="+08:30"
+                                            style={{ maxWidth: 160 }}
+                                            value={customOffsetInput}
+                                            onChange={(e) => setCustomOffsetInput(e.target.value)}
+                                        />
+                                        <div className="small text-muted">Example: +08:30, -05:45</div>
+                                        <Button size="sm" variant="outline-primary" onClick={() => {
+                                            // validate and set preview only (do NOT commit)
+                                            const canonical = previewCustomOffset(customOffsetInput); // returns "+08:30" or null on error
+                                            if (canonical) {
+                                                const storeValue = `offset:${canonical}`;
+                                                setPreviewTimezoneValue(storeValue);
+                                                setPreviewTimeStr(formatDateWithMoment(new Date(), storeValue));
+                                            }
+                                        }}>
+                                            Preview
+                                        </Button>
+                                    </div>
+                                )}
+
+                                {/* show a preview time inside modal (doesn't change main card) */}
+                                <div className="small text-muted mt-2">
+                                    Preview time: <strong>{previewTimeStr || formatDateWithMoment(new Date(), timezoneValue)}</strong>
+                                </div>
+
+                                <div className="small text-muted mt-2">
+                                    Saved timezone (cookie): <strong>{getCookie(TIMEZONE_COOKIE) || timezoneValue}</strong>
+                                </div>
+                            </Form.Group>
+
+                        </Tab>
+
                     </Tabs>
 
                     {settingsSaveError && <div className="mt-3 text-danger small">{settingsSaveError}</div>}
